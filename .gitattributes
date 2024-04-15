@@ -1,0 +1,5 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+data/worker-cache/puppeteer/chrome-headless-shell/linux-127.0.6533.88/chrome-headless-shell-linux64/chrome-headless-shell filter=lfs diff=lfs merge=lfs -text
+data/worker-cache/puppeteer/chrome/linux-127.0.6533.88/chrome-linux64/chrome filter=lfs diff=lfs merge=lfs -text
+data/crawl_backups/global_visited_bloom_latest.dump filter=lfs diff=lfs merge=lfs -text
