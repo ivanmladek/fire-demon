@@ -4,7 +4,7 @@ import { SearchResult } from "../../src/lib/entities";
 
 dotenv.config();
 
-export async function fireEngineSearch(q: string, options: {
+export async function fireEngineMap(q: string, options: {
     tbs?: string;
     filter?: string;
     lang?: string;
