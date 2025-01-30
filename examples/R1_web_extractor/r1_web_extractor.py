@@ -1,9 +1,9 @@
 import os
 import json
+import time
 import requests
 from dotenv import load_dotenv
 from openai import OpenAI
-from firecrawl import FirecrawlApp
 from serpapi.google_search import GoogleSearch
 
 # ANSI color codes
@@ -22,58 +22,76 @@ load_dotenv()
 # Initialize clients
 client = OpenAI(api_key=os.getenv("DEEPSEEK_API_KEY"), base_url="https://api.deepseek.com")
 firecrawl_api_key = os.getenv("FIRECRAWL_API_KEY")
+serp_api_key = os.getenv("SERP_API_KEY")
 
 def search_google(query):
     """Search Google using SerpAPI and return top results."""
     print(f"{Colors.YELLOW}Searching Google for '{query}'...{Colors.RESET}")
-    search = GoogleSearch({"q": query, "api_key": os.getenv("SERP_API_KEY")})
+    search = GoogleSearch({"q": query, "api_key": serp_api_key})
     return search.get_dict().get("organic_results", [])
 
-def select_urls_with_deepseek(company, objective, serp_results):
+def select_urls_with_r1(company, objective, serp_results):
     """
-    Use Deepseek R1 to select the most relevant URLs from SERP results for the given company and objective.
-    Returns a list of selected URLs.
+    Use R1 to select the most relevant URLs from SERP results for the given company and objective.
+    Returns a list of URLs.
     """
     try:
-        # Prepare the data for Deepseek
+        # Prepare the data for R1
         serp_data = [{"title": r.get("title"), "link": r.get("link"), "snippet": r.get("snippet")} 
                      for r in serp_results if r.get("link")]
 
-        system_prompt = """You are an expert at selecting the most relevant URLs for company research. 
-        Analyze the search results and select URLs that are most likely to contain the requested information.
-        Exclude social media links. Add /* to URLs where the entire site should be crawled.
-        Return only a JSON object with the 'selected_urls' array."""
-
         response = client.chat.completions.create(
-            model="deepseek-reasoner",# Update with actual Deepseek model identifier
+            model="deepseek-reasoner",
             messages=[
                 {
                     "role": "system",
-                    "content": system_prompt
+                    "content": "You are a URL selector that always responds with valid JSON. You select URLs from the SERP results relevant to the company and objective. Your response must be a JSON object with a 'selected_urls' array property containing strings."
                 },
                 {
                     "role": "user",
                     "content": (
                         f"Company: {company}\n"
                         f"Objective: {objective}\n"
-                        f"Search Results: {json.dumps(serp_data)}\n\n"
-                        "Select the most relevant URLs and return them in this format: "
-                        "{\"selected_urls\": [\"https://example.com\", \"https://example2.com/*\"]}"
+                        f"SERP Results: {json.dumps(serp_data)}\n\n"
+                        "Return a JSON object with a property 'selected_urls' that contains an array "
+                        "of URLs most likely to help meet the objective. Add a /* to the end of the URL if you think it should search all of the pages in the site. Do not return any social media links. For example: {\"selected_urls\": [\"https://example.com\", \"https://example2.com\"]}"
                     )
                 }
-            ],
-            temperature=0.3,
-            max_tokens=1000,
-            response_format={"type": "json_object"}
+            ]
         )
 
-        # Parse the JSON response
-        result = json.loads(response.choices[0].message.content)
-        urls = result.get("selected_urls", [])
-        return urls
+        try:
+            # First try to parse as JSON
+            result = json.loads(response.choices[0].message.content)
+            if isinstance(result, dict) and "selected_urls" in result:
+                urls = result["selected_urls"]
+            else:
+                # If JSON doesn't have the expected structure, fall back to text parsing
+                response_text = response.choices[0].message.content
+                urls = [line.strip() for line in response_text.split('\n') 
+                       if line.strip().startswith(('http://', 'https://'))]
+        except json.JSONDecodeError:
+            # If JSON parsing fails, fall back to text parsing
+            response_text = response.choices[0].message.content
+            urls = [line.strip() for line in response_text.split('\n') 
+                   if line.strip().startswith(('http://', 'https://'))]
+
+        # Clean up URLs - remove wildcards and trailing slashes
+        cleaned_urls = [url.replace('/*', '').rstrip('/') for url in urls]
+        cleaned_urls = [url for url in cleaned_urls if url]
+
+        if not cleaned_urls:
+            print(f"{Colors.YELLOW}No valid URLs found.{Colors.RESET}")
+            return []
+
+        print(f"{Colors.CYAN}Selected URLs for extraction by R1:{Colors.RESET}")
+        for url in cleaned_urls:
+            print(f"- {url}")
+
+        return cleaned_urls
 
     except Exception as e:
-        print(f"{Colors.RED}Error selecting URLs with Deepseek: {e}{Colors.RESET}")
+        print(f"{Colors.RED}Error selecting URLs with R1: {e}{Colors.RESET}")
         return []
 
 def extract_company_info(urls, prompt, company, api_key):
@@ -87,21 +105,76 @@ def extract_company_info(urls, prompt, company, api_key):
     
     payload = {
         "urls": urls,
-        "prompt": prompt + " for " + company
+        "prompt": prompt + " for " + company,
+        "enableWebSearch": True
     }
     
     try:
         response = requests.post(
             "https://api.firecrawl.dev/v1/extract",
             headers=headers,
-            json=payload
+            json=payload,
+            timeout=30
         )
-        response.raise_for_status()
+        
         data = response.json()
-        return data
+        
+        if not data.get('success'):
+            print(f"{Colors.RED}API returned error: {data.get('error', 'No error message')}{Colors.RESET}")
+            return None
+        
+        # Assuming Firecrawl provides a way to retrieve data with 'id'
+        extraction_id = data.get('id')
+        if not extraction_id:
+            print(f"{Colors.RED}No extraction ID found in response.{Colors.RESET}")
+            return None
+
+        # Polling for the extraction result
+        return poll_firecrawl_result(extraction_id, api_key)
+
+    except requests.exceptions.RequestException as e:
+        print(f"{Colors.RED}Request failed: {e}{Colors.RESET}")
+        return None
+    except json.JSONDecodeError as e:
+        print(f"{Colors.RED}Failed to parse response: {e}{Colors.RESET}")
+        return None
     except Exception as e:
         print(f"{Colors.RED}Failed to extract data: {e}{Colors.RESET}")
         return None
+
+def poll_firecrawl_result(extraction_id, api_key, interval=5, max_attempts=12):
+    """Poll Firecrawl API to get the extraction result."""
+    url = f"https://api.firecrawl.dev/v1/extract/{extraction_id}"
+    headers = {
+        'Authorization': f'Bearer {api_key}'
+    }
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            # print(f"{Colors.YELLOW}Polling for extraction result (Attempt {attempt}/{max_attempts})...{Colors.RESET}")
+            response = requests.get(url, headers=headers, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get('success') and data.get('data'):
+                print(f"{Colors.GREEN}Data successfully extracted:{Colors.RESET}")
+                print(json.dumps(data['data'], indent=2))
+                return data['data']
+            elif data.get('success') and not data.get('data'):
+                time.sleep(interval)
+            else:
+                print(f"{Colors.RED}API Error: {data.get('error', 'No error message provided')}{Colors.RESET}")
+                return None
+
+        except requests.exceptions.RequestException:
+            return None
+        except json.JSONDecodeError:
+            return None
+        except Exception:
+            return None
+
+    print(f"{Colors.RED}Max polling attempts reached. Extraction did not complete in time.{Colors.RESET}")
+    return None
 
 def main():
     company = input(f"{Colors.BLUE}Enter the company name: {Colors.RESET}")
@@ -112,24 +185,19 @@ def main():
         print(f"{Colors.RED}No search results found.{Colors.RESET}")
         return
     
-    # Ask Deepseek to select URLs
-    selected_urls = select_urls_with_deepseek(company, objective, serp_results)
+    # Ask R1 to select URLs
+    selected_urls = select_urls_with_r1(company, objective, serp_results)
     
     if not selected_urls:
-        print(f"{Colors.RED}Deepseek did not return any URLs.{Colors.RESET}")
+        print(f"{Colors.RED}R1 did not return any URLs.{Colors.RESET}")
         return
     
-    print(f"{Colors.CYAN}Selected URLs for extraction by Deepseek:{Colors.RESET}")
-    for url in selected_urls:
-        print(f"- {url}")
-
     data = extract_company_info(selected_urls, objective, company, firecrawl_api_key)
     
-    if data and data.get('success') and data.get('data'):
-        print(f"{Colors.GREEN}Data successfully extracted:{Colors.RESET}")
-        print(json.dumps(data['data'], indent=2))
+    if data:
+        print(f"{Colors.GREEN}Extraction completed successfully.{Colors.RESET}")
     else:
         print(f"{Colors.RED}Failed to extract the requested information. Try refining your prompt or choosing a different company.{Colors.RESET}")
 
 if __name__ == "__main__":
-    main()
+        main()
