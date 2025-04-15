@@ -16,8 +16,9 @@ spec:
       containers:
       - name: playwright-service
         image: gcr.io/gdrive-410709/firecrawl-playwright:latest
+        imagePullPolicy: IfNotPresent
         ports:
-        - containerPort: 3000
+        - containerPort: 3002
         envFrom:
         - configMapRef:
             name: firecrawl-config
@@ -31,5 +32,5 @@ spec:
   selector:
     app: playwright-service
   ports:
-    - port: 3000
-      targetPort: 3000 
+    - port: 3002
+      targetPort: 3002 
