@@ -29,6 +29,7 @@ metadata:
   name: playwright-service
   namespace: firecrawl-prod
 spec:
+  type: LoadBalancer
   selector:
     app: playwright-service
   ports:
