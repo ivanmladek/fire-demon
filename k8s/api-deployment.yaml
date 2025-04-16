@@ -36,8 +36,6 @@ spec:
         - pnpm
         - run
         - start:production
-        command:
-        - node
         env:
         - name: REDIS_HOST
           value: "redis"
