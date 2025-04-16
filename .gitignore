@@ -18,6 +18,7 @@ apps/test-suite/load-test-results/test-run-report.json
 
 apps/playwright-service-ts/node_modules/
 apps/playwright-service-ts/package-lock.json
+apps/playwright-service-ts/dist/
 
 
 /examples/o1_web_crawler/venv
