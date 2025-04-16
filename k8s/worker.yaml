@@ -1,0 +1,62 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: firecrawl-prod
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+    spec:
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 1
+            preference:
+              matchExpressions:
+              - key: node.kubernetes.io/disk-pressure
+                operator: DoesNotExist
+      containers:
+      - name: worker
+        image: gcr.io/gdrive-410709/firecrawl:latest
+        imagePullPolicy: IfNotPresent
+        args: ["pnpm", "run", "workers"]
+        env:
+        - name: FLY_PROCESS_GROUP
+          value: "worker"
+        envFrom:
+        - configMapRef:
+            name: firecrawl-config
+        resources:
+          limits:
+            memory: "1024Mi"
+            cpu: "1000m"
+            ephemeral-storage: "2Gi"
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+            ephemeral-storage: "1Gi"
+        livenessProbe:
+          exec:
+            command:
+            - pnpm
+            - run
+            - health:worker
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 5
+          successThreshold: 1
+          failureThreshold: 3
+        lifecycle:
+          preStop:
+            exec:
+              command: ["pnpm", "run", "graceful-shutdown"]
+      tolerations:
+      - key: "node.kubernetes.io/disk-pressure"
+        operator: "Exists"
+        effect: "NoSchedule" 

@@ -8,7 +8,7 @@ import { getError } from './helpers/get_error';
 dotenv.config();
 
 const app = express();
-const port = process.env.PORT || 3003;
+const PORT = 3003;
 
 app.use(bodyParser.json());
 
@@ -218,9 +218,9 @@ app.post('/scrape', async (req: Request, res: Response) => {
   });
 });
 
-app.listen(port, () => {
+app.listen(PORT, () => {
   initializeBrowser().then(() => {
-    console.log(`Server is running on port ${port}`);
+    console.log(`Server is running on port ${PORT}`);
   });
 });
 
