@@ -29,6 +29,16 @@ spec:
         env:
         - name: FLY_PROCESS_GROUP
           value: "worker"
+        # Explicit Redis vars as a potential workaround
+        - name: REDIS_HOST
+          value: "redis" # Kubernetes service name
+        - name: REDIS_PORT
+          value: "6379"
+        - name: REDIS_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: firecrawl-secret # Use the correct secret name
+              key: REDIS_PASSWORD
         envFrom:
         - configMapRef:
             name: firecrawl-config

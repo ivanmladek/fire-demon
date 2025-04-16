@@ -1,0 +1,11 @@
+apiVersion: v1
+data:
+  PLAYWRIGHT_MICROSERVICE_URL: http://playwright-service:3000/scrape
+  REDIS_URL: redis://:A7b3C9d1E5fGhIjKlMnOpQrStUvWxYz0@redis:6379
+kind: ConfigMap
+metadata:
+  creationTimestamp: "2025-04-15T09:45:45Z"
+  name: firecrawl-config
+  namespace: firecrawl-prod
+  resourceVersion: "72456"
+  uid: 78ad99c2-d683-473f-9eb1-810000c9cd78
