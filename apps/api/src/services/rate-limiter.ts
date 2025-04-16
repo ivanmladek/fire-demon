@@ -5,6 +5,9 @@ import type { AuthCreditUsageChunk } from "../controllers/v1/types";
 
 export const redisRateLimitClient = new Redis(
   process.env.REDIS_RATE_LIMIT_URL!,
+  {
+    maxRetriesPerRequest: null,
+  }
 );
 
 const createRateLimiter = (keyPrefix, points) =>
