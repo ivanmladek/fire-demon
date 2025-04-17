@@ -23,22 +23,23 @@ spec:
                 operator: DoesNotExist
       containers:
       - name: worker
-        image: gcr.io/gdrive-410709/firecrawl:latest
+        image: gcr.io/gdrive-410709/firecrawl-worker:latest
         imagePullPolicy: IfNotPresent
         args: ["pnpm", "run", "workers"]
         env:
         - name: FLY_PROCESS_GROUP
-          value: "worker"
-        # Explicit Redis vars as a potential workaround
+          value: worker
         - name: REDIS_HOST
-          value: "redis" # Kubernetes service name
+          value: redis
         - name: REDIS_PORT
           value: "6379"
         - name: REDIS_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: firecrawl-secret # Use the correct secret name
+              name: redis-password
               key: REDIS_PASSWORD
+        - name: GOOGLE_APPLICATION_CREDENTIALS
+          value: /var/secrets/google/credentials.json
         envFrom:
         - configMapRef:
             name: firecrawl-config
@@ -66,7 +67,15 @@ spec:
           preStop:
             exec:
               command: ["pnpm", "run", "graceful-shutdown"]
+        volumeMounts:
+        - name: gcs-creds
+          mountPath: /var/secrets/google
+          readOnly: true
       tolerations:
       - key: "node.kubernetes.io/disk-pressure"
         operator: "Exists"
-        effect: "NoSchedule" 
+        effect: "NoSchedule"
+      volumes:
+      - name: gcs-creds
+        secret:
+          secretName: gcs-credentials 
