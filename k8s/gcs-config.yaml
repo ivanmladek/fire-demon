@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: firecrawl-config
+  namespace: firecrawl-prod
+data:
+  GCS_BUCKET_NAME: "firecrawl-jobs-1744874008"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: gcs-credentials
+  namespace: firecrawl-prod
+type: Opaque
+# Note: The actual credentials will be created separately using kubectl create secret 
