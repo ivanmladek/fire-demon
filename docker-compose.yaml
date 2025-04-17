@@ -44,9 +44,9 @@ x-common-env: &common-env
   SERPER_API_KEY: ${SERPER_API_KEY}
   SEARCHAPI_API_KEY: ${SEARCHAPI_API_KEY}
   LOGGING_LEVEL: ${LOGGING_LEVEL}
-  PROXY_SERVER: ${PROXY_SERVER}
-  PROXY_USERNAME: ${PROXY_USERNAME}
-  PROXY_PASSWORD: ${PROXY_PASSWORD}
+  PROXY_SERVER: gate.nodemaven.com:8080
+  PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-us-ipv4-true-filter-medium
+  PROXY_PASSWORD: ktonj4oufu
   SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
@@ -56,9 +56,9 @@ services:
     build: apps/playwright-service-ts
     environment:
       PORT: 3000
-      PROXY_SERVER: ${PROXY_SERVER}
-      PROXY_USERNAME: ${PROXY_USERNAME}
-      PROXY_PASSWORD: ${PROXY_PASSWORD}
+      PROXY_SERVER: gate.nodemaven.com:8080
+      PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-us-ipv4-true-filter-medium
+      PROXY_PASSWORD: ktonj4oufu
       BLOCK_MEDIA: ${BLOCK_MEDIA}
     networks:
       - backend
