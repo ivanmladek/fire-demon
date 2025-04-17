@@ -23,7 +23,7 @@ spec:
                 operator: DoesNotExist
       containers:
       - name: worker
-        image: gcr.io/gdrive-410709/firecrawl-worker:latest
+        image: gcr.io/gdrive-410709/firecrawl:latest
         imagePullPolicy: IfNotPresent
         args: ["pnpm", "run", "workers"]
         env:
@@ -57,7 +57,7 @@ spec:
             command:
             - pnpm
             - run
-            - health:worker
+            - worker:production
           initialDelaySeconds: 60
           periodSeconds: 30
           timeoutSeconds: 5
