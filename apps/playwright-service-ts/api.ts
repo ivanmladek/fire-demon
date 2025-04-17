@@ -43,7 +43,6 @@ interface UrlModel {
 }
 
 let browser: Browser;
-let context: BrowserContext;
 
 const initializeBrowser = async () => {
   browser = await chromium.launch({
@@ -59,7 +58,9 @@ const initializeBrowser = async () => {
       '--disable-gpu'
     ]
   });
+};
 
+const createContext = async () => {
   const userAgent = new UserAgent().toString();
   const viewport = { width: 1280, height: 800 };
 
@@ -80,7 +81,7 @@ const initializeBrowser = async () => {
     };
   }
 
-  context = await browser.newContext(contextOptions);
+  const context = await browser.newContext(contextOptions);
 
   if (BLOCK_MEDIA) {
     await context.route('**/*.{png,jpg,jpeg,gif,svg,mp3,mp4,avi,flac,ogg,wav,webm}', async (route: Route, request: PlaywrightRequest) => {
@@ -99,12 +100,11 @@ const initializeBrowser = async () => {
     }
     return route.continue();
   });
+
+  return context;
 };
 
 const shutdownBrowser = async () => {
-  if (context) {
-    await context.close();
-  }
   if (browser) {
     await browser.close();
   }
@@ -174,10 +174,11 @@ app.post('/scrape', async (req: Request, res: Response) => {
     console.warn('⚠️ WARNING: No proxy server provided. Your IP address may be blocked.');
   }
 
-  if (!browser || !context) {
+  if (!browser) {
     await initializeBrowser();
   }
 
+  const context = await createContext();
   const page = await context.newPage();
 
   // Set headers if provided
@@ -197,6 +198,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
       result = await scrapePage(page, url, 'networkidle', wait_after_load, timeout, check_selector);
     } catch (finalError) {
       await page.close();
+      await context.close();
       return res.status(500).json({ error: 'An error occurred while fetching the page.' });
     }
   }
@@ -210,11 +212,12 @@ app.post('/scrape', async (req: Request, res: Response) => {
   }
 
   await page.close();
+  await context.close();
 
-  res.json({
+  return res.json({
     content: result.content,
     pageStatusCode: result.status,
-    ...(pageError && { pageError })
+    pageError,
   });
 });
 
