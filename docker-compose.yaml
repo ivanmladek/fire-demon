@@ -63,17 +63,11 @@ services:
       PROXY_PASSWORD: ktonj4oufu
       BLOCK_MEDIA: true
       # Browser optimization settings
-      BROWSER_CONTEXT_OPTIONS: '{"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36","viewport":{"width":1920,"height":1080},"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"javaScriptEnabled":true,"bypassCSP":true,"ignoreHTTPSErrors":true,"extraHTTPHeaders":{"Accept-Language":"en-US,en;q=0.9","Accept-Encoding":"gzip, deflate, br","Accept":"text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8","DNT":"1","Upgrade-Insecure-Requests":"1","Sec-Fetch-Dest":"document","Sec-Fetch-Mode":"navigate","Sec-Fetch-Site":"none","Sec-Fetch-User":"?1"}}'
+      BROWSER_CONTEXT_OPTIONS: '{"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36","viewport":{"width":1920,"height":1080},"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"javaScriptEnabled":true}'
       MAX_CONCURRENT_PAGES: 5
       PAGE_TIMEOUT: 60000
       RETRY_COUNT: 3
       RETRY_DELAY: 1000
-      # Proxy stealth settings
-      PROXY_STEALTH: true
-      RANDOMIZE_USER_AGENT: true
-      RANDOMIZE_VIEWPORT: true
-      RANDOM_DELAY_MIN: 2000
-      RANDOM_DELAY_MAX: 5000
     networks:
       - backend
     deploy:
@@ -122,9 +116,9 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1G
+          memory: 20G
         reservations:
-          memory: 512M
+          memory: 10G
 
 networks:
   backend:
