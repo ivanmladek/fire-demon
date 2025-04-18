@@ -17,6 +17,7 @@ import {
 } from "../scraper/scrapeURL";
 import { Engine } from "../scraper/scrapeURL/engines";
 import { indexPage } from "../lib/extract/index/pinecone";
+import { sleep } from "../../src/lib/utils";
 configDotenv();
 
 export async function startWebScraperPipeline({
@@ -76,6 +77,7 @@ export async function runWebScraper({
     jobId: bull_job_id,
   });
   const tries = is_crawl ? 3 : 1;
+  const baseRetryDelay = 5000;
 
   let response: ScrapeUrlResponse | undefined = undefined;
   let engines: EngineResultsTracker = {};
@@ -83,12 +85,15 @@ export async function runWebScraper({
 
   for (let i = 0; i < tries; i++) {
     if (i > 0) {
-      logger.debug("Retrying scrape...", {
+      const delay = baseRetryDelay * Math.pow(2, i - 1);
+      logger.debug(`Retrying scrape in ${delay / 1000} seconds...`, {
         tries,
         i,
         previousStatusCode: (response as any)?.document?.metadata?.statusCode,
         previousError: error,
+        delay,
       });
+      await sleep(delay);
     }
 
     response = undefined;
@@ -130,6 +135,8 @@ export async function runWebScraper({
         // status code is good -- do not attempt retry
         break;
       }
+      error = new Error(`Received non-successful status code: ${response.document.metadata.statusCode}`);
+
     } catch (_error) {
       error = _error;
       engines =
