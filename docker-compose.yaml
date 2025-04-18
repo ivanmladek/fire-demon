@@ -5,6 +5,7 @@ x-common-service: &common-service
   # uncomment the build: statement and comment out the image: statement
   # image: ghcr.io/mendableai/firecrawl
   build: apps/api
+  restart: always
 
   ulimits:
     nofile:
@@ -54,6 +55,7 @@ x-common-env: &common-env
 services:
   playwright-service:
     build: apps/playwright-service-ts
+    restart: always
     environment:
       PORT: 3000
       PROXY_SERVER: gate.nodemaven.com:8080
