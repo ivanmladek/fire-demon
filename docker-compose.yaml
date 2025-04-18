@@ -110,11 +110,16 @@ services:
       <<: *common-env
       FLY_PROCESS_GROUP: worker
       # Queue configuration
-      BULL_CONCURRENCY: 10
-      BULL_LIMITER_MAX: 200
+      BULL_CONCURRENCY: 5
+      BULL_LIMITER_MAX: 50
       BULL_LIMITER_DURATION: 1000
-      BULL_LOCK_DURATION: 30000
+      BULL_LOCK_DURATION: 60000
       BULL_STALLED_INTERVAL: 30000
+      BULL_REMOVE_ON_COMPLETE: true
+      BULL_REMOVE_ON_FAIL: true
+      BULL_ATTEMPTS: 3
+      BULL_BACKOFF: 5000
+      NODE_OPTIONS: "--max-old-space-size=24576"
     depends_on:
       - redis
       - playwright-service
