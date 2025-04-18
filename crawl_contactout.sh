@@ -46,7 +46,7 @@ curl -X POST http://localhost:3002/v1/crawl \
   ],
   "scrapeOptions": {
     "formats": ["markdown"],
-    "blockAds": true,
+    "blockMedia": true,
     "onlyMainContent": true,
     "excludeTags": ["img"]
   }
