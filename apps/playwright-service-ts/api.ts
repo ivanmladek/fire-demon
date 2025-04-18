@@ -31,7 +31,16 @@ const AD_SERVING_DOMAINS = [
   'ads-twitter.com',
   'facebook.net',
   'fbcdn.net',
-  'amazon-adsystem.com'
+  'amazon-adsystem.com',
+  'images.contactout.com',
+  'challenges.cloudflare.com',
+  'script.hotjar.com',
+  'cdnjs.cloudflare.com',
+  's3-us-west-1.amazonaws.com',
+  'static.hotjar.com',
+  'accounts.google.com',
+  'fonts.googleapis.com',
+  'encrypted-tbn0.gstatic.com'
 ];
 
 interface UrlModel {
@@ -81,6 +90,12 @@ const createContext = async () => {
     };
   }
 
+  if (contextOptions.proxy) {
+    console.log(`[Proxy Check] Creating context WITH proxy: Server=${contextOptions.proxy.server}, Username=${contextOptions.proxy.username}`);
+  } else {
+    console.log(`[Proxy Check] Creating context WITHOUT proxy.`);
+  }
+
   const context = await browser.newContext(contextOptions);
 
   if (BLOCK_MEDIA) {
@@ -95,7 +110,6 @@ const createContext = async () => {
     const hostname = requestUrl.hostname;
 
     if (AD_SERVING_DOMAINS.some(domain => hostname.includes(domain))) {
-      console.log(hostname);
       return route.abort();
     }
     return route.continue();
