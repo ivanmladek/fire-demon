@@ -50,6 +50,8 @@ curl -X POST http://localhost:3002/v1/crawl \
   "scrapeOptions": {
     "removeBase64Images": true,
     "blockAds": true,
+    "proxy": "basic",
+
     "formats": ["markdown"],
     "onlyMainContent": true,
     "excludeTags": [
