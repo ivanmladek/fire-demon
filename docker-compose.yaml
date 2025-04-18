@@ -44,9 +44,9 @@ x-common-env: &common-env
   SERPER_API_KEY: ${SERPER_API_KEY}
   SEARCHAPI_API_KEY: ${SEARCHAPI_API_KEY}
   LOGGING_LEVEL: ${LOGGING_LEVEL}
-  PROXY_SERVER: dc.smartproxy.com:10000
-  PROXY_USERNAME: spm6ran2n8
-  PROXY_PASSWORD: =6jniZktLMef4Elv58
+  PROXY_SERVER: gate.nodemaven.com:8080
+  PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-us-filter-medium
+  PROXY_PASSWORD: ktonj4oufu
   SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
@@ -56,18 +56,26 @@ services:
     build: apps/playwright-service-ts
     environment:
       PORT: 3000
-      PROXY_SERVER: dc.smartproxy.com:10000
-      PROXY_USERNAME: spm6ran2n8
-      PROXY_PASSWORD: =6jniZktLMef4Elv58
-      BLOCK_MEDIA: ${BLOCK_MEDIA}
+      PROXY_SERVER: gate.nodemaven.com:8080
+      PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-us-filter-medium
+      PROXY_PASSWORD: ktonj4oufu
+      BLOCK_MEDIA: true
+      # Browser optimization settings
+      BROWSER_CONTEXT_OPTIONS: '{"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36","viewport":{"width":1920,"height":1080},"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"javaScriptEnabled":true}'
+      MAX_CONCURRENT_PAGES: 5
+      PAGE_TIMEOUT: 60000
+      RETRY_COUNT: 3
+      RETRY_DELAY: 1000
     networks:
       - backend
     deploy:
       resources:
         limits:
-          memory: 4G
+          memory: 40G
+          cpus: '8'
         reservations:
-          memory: 2G
+          memory: 20G
+          cpus: '4'
 
   api:
     <<: *common-service
