@@ -18,9 +18,9 @@ x-common-service: &common-service
   deploy:
     resources:
       limits:
-        memory: 2G
+        memory: 16G
       reservations:
-        memory: 1G
+        memory: 8G
 
 x-common-env: &common-env
   REDIS_URL: ${REDIS_URL:-redis://redis:6379}
@@ -64,7 +64,7 @@ services:
       BLOCK_MEDIA: true
       # Browser optimization settings
       BROWSER_CONTEXT_OPTIONS: '{"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36","viewport":{"width":1920,"height":1080},"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"javaScriptEnabled":true}'
-      MAX_CONCURRENT_PAGES: 5
+      MAX_CONCURRENT_PAGES: 10
       PAGE_TIMEOUT: 60000
       RETRY_COUNT: 3
       RETRY_DELAY: 1000
@@ -73,11 +73,11 @@ services:
     deploy:
       resources:
         limits:
-          memory: 40G
-          cpus: '8'
+          memory: 64G
+          cpus: '16'
         reservations:
-          memory: 20G
-          cpus: '4'
+          memory: 32G
+          cpus: '8'
 
   api:
     <<: *common-service
@@ -92,17 +92,39 @@ services:
     ports:
       - "${PORT:-3002}:${INTERNAL_PORT:-3002}"
     command: [ "pnpm", "run", "start:production" ]
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+          cpus: '4'
+        reservations:
+          memory: 8G
+          cpus: '2'
 
   worker:
     <<: *common-service
     environment:
       <<: *common-env
       FLY_PROCESS_GROUP: worker
+      # Queue configuration
+      BULL_CONCURRENCY: 10
+      BULL_LIMITER_MAX: 200
+      BULL_LIMITER_DURATION: 1000
+      BULL_LOCK_DURATION: 30000
+      BULL_STALLED_INTERVAL: 30000
     depends_on:
       - redis
       - playwright-service
       - api
     command: [ "pnpm", "run", "workers" ]
+    deploy:
+      resources:
+        limits:
+          memory: 32G
+          cpus: '8'
+        reservations:
+          memory: 16G
+          cpus: '4'
 
   redis:
     # NOTE: If you want to use Valkey (open source) instead of Redis (source available),
@@ -112,13 +134,13 @@ services:
     # image: valkey/valkey:alpine
     networks:
       - backend
-    command: redis-server --bind 0.0.0.0
+    command: redis-server --bind 0.0.0.0 --maxmemory 32gb --maxmemory-policy allkeys-lru
     deploy:
       resources:
         limits:
-          memory: 20G
+          memory: 32G
         reservations:
-          memory: 10G
+          memory: 16G
 
 networks:
   backend:
