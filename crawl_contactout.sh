@@ -2,13 +2,16 @@
 
 # Crawl ContactOut profile pages
 curl -X POST http://localhost:3002/v1/crawl \
+-H "Authorization: Bearer test-api-key-123" \
 -H "Content-Type: application/json" \
 -d '{
   "url": "https://contactout.com/don-burke-36416",
   "allowBackwardLinks": true,
   "limit": 1000,
   "maxDepth": 10,
+  "allowExternalLinks": false,
   "ignoreSitemap": true,
+
   "excludePaths": [
     "^https://contactout\\.com/?$",
     "/alternative",
@@ -45,9 +48,34 @@ curl -X POST http://localhost:3002/v1/crawl \
     "/terms"
   ],
   "scrapeOptions": {
+    "removeBase64Images": true,
+    "blockAds": true,
     "formats": ["markdown"],
-    "blockMedia": true,
     "onlyMainContent": true,
-    "excludeTags": ["img"]
+    "excludeTags": [
+      "img",
+      "script",
+      "style",
+      "noscript",
+      "iframe",
+      "embed",
+      "object",
+      "video",
+      "audio",
+      "canvas",
+      "svg",
+      "picture",
+      "source",
+      "track",
+      "map",
+      "area",
+      "link",
+      "meta",
+      "head",
+      "footer",
+      "nav",
+      "aside",
+      "header"
+    ]
   }
 }' 
