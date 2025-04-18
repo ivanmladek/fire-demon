@@ -10,4 +10,4 @@ JOB_ID=$1
 
 # Make the API call and format output as CSV
 curl -X GET "http://localhost:3002/v0/crawl/status/$JOB_ID" | \
-jq -r '.partial_data[] | select(.metadata != null) | [.metadata.url, .metadata.pageStatusCode] | @csv' 
+jq -r '.data[] | select(.metadata != null) | [.metadata.url, .metadata.pageStatusCode] | @csv' 
