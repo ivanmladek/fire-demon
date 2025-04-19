@@ -145,9 +145,12 @@ services:
       - api
     command: >
       bash -c "
-      apt-get update && apt-get install -y curl python3 python3-pip &&
-      curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts &&
+      apt-get update && 
+      apt-get install -y curl python3 python3-pip apt-transport-https ca-certificates gnupg git &&
       mkdir -p /var/secrets/google /app/data/crawl_backups &&
+      cd /app &&
+      npm install @google-cloud/storage &&
+      GOOGLE_APPLICATION_CREDENTIALS=/var/secrets/google/credentials.json node -e \"const {Storage} = require('@google-cloud/storage'); console.log('GCP Storage initialized')\" &&
       pnpm run workers"
     volumes:
       - /Users/jj/code/gdrive-410709-7f394f22402f.json:/var/secrets/google/credentials.json:ro
