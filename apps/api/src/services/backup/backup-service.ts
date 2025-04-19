@@ -75,7 +75,7 @@ export class BackupService {
     if (!crawlData) return;
 
     const sc = JSON.parse(crawlData);
-    const domain = new URL(sc.originUrl).hostname;
+    const domain = new URL(sc.originUrl!).hostname;
     
     // Get all visited URLs in this batch
     const visitedUrls = await redisConnection.smembers(`crawl:${this.currentCrawlId}:visited_unique`);
