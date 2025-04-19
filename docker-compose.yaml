@@ -155,6 +155,7 @@ services:
     volumes:
       - /Users/jj/code/gdrive-410709-7f394f22402f.json:/var/secrets/google/credentials.json:ro
       - ./data/crawl_backups:/app/data/crawl_backups
+      - ./apps/api/src:/app/src
     deploy:
       resources:
         limits:
@@ -168,11 +169,12 @@ services:
     # NOTE: If you want to use Valkey (open source) instead of Redis (source available),
     # uncomment the Valkey statement and comment out the Redis statement.
     # Using Valkey with Firecrawl is untested and not guaranteed to work. Use with caution.
-    image: redis:alpine
+    # image: redis:alpine
+    image: redis/redis-stack:latest
     # image: valkey/valkey:alpine
     networks:
       - backend
-    command: redis-server --bind 0.0.0.0 --maxmemory 20gb --maxmemory-policy allkeys-lru
+    command: redis-server --bind 0.0.0.0 --maxmemory 20gb --maxmemory-policy allkeys-lru --loadmodule /opt/redis-stack/lib/redisbloom.so --protected-mode no
     deploy:
       resources:
         limits:
