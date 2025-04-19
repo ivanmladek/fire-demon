@@ -75,6 +75,7 @@ import { performDeepResearch } from "../lib/deep-research/deep-research-service"
 import { performGenerateLlmsTxt } from "../lib/generate-llmstxt/generate-llmstxt-service";
 import { updateGeneratedLlmsTxt } from "../lib/generate-llmstxt/generate-llmstxt-redis";
 import { performExtraction_F0 } from "../lib/extract/fire-0/extraction-service-f0";
+import { BackupService } from './backup/backup-service';
 
 configDotenv();
 
@@ -101,6 +102,9 @@ const connectionMonitorInterval =
 const gotJobInterval = Number(process.env.CONNECTION_MONITOR_INTERVAL) || 20;
 
 const runningJobs: Set<string> = new Set();
+
+const backupService = new BackupService();
+let currentCrawlId: string | null = null;
 
 async function finishCrawlIfNeeded(job: Job & { id: string }, sc: StoredCrawl) {
   if (await finishCrawlPre(job.data.crawl_id)) {
@@ -1074,6 +1078,13 @@ async function processJob(job: Job & { id: string }, token: string) {
       if (sc && sc.cancelled) {
         throw new Error("Parent crawl/batch scrape was cancelled");
       }
+
+      // Initialize backup service for new crawls
+      if (job.data.crawl_id !== currentCrawlId) {
+        const domain = new URL(sc.originUrl).hostname;
+        await backupService.initializeBackup(job.data.crawl_id, domain);
+        currentCrawlId = job.data.crawl_id;
+      }
     }
 
     const pipeline = await Promise.race([
@@ -1229,6 +1240,9 @@ async function processJob(job: Job & { id: string }, token: string) {
 
       logger.debug("Declaring job as done...");
       await addCrawlJobDone(job.data.crawl_id, job.id, true);
+
+      // Check for backup after job completion
+      await backupService.checkAndBackup();
 
       if (job.data.crawlerOptions !== null) {
         if (!sc.cancelled) {
