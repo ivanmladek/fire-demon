@@ -76,6 +76,10 @@ import { performGenerateLlmsTxt } from "../lib/generate-llmstxt/generate-llmstxt
 import { updateGeneratedLlmsTxt } from "../lib/generate-llmstxt/generate-llmstxt-redis";
 import { performExtraction_F0 } from "../lib/extract/fire-0/extraction-service-f0";
 import { BackupService } from './backup/backup-service';
+import { Storage } from '@google-cloud/storage';
+import * as fs from 'fs/promises';
+import * as path from 'path';
+import { createReadStream, createWriteStream } from 'fs';
 
 configDotenv();
 
@@ -105,6 +109,158 @@ const runningJobs: Set<string> = new Set();
 
 const backupService = new BackupService();
 let currentCrawlId: string | null = null;
+
+const GLOBAL_VISITED_KEY = 'global:visited_bloom';
+const BLOOM_CAPACITY = 300000000; // Target ~240M, add some buffer
+const BLOOM_ERROR_RATE = 0.01;
+const BLOOM_BACKUP_FILE_LOCAL = '/app/data/crawl_backups/global_visited_bloom_latest.dump';
+const BLOOM_BACKUP_FILE_GCP = 'global_visited_bloom_latest.dump';
+const GCP_BUCKET = process.env.GCP_BUCKET || 'firecrawl-backups'; // Ensure this is set
+const BLOOM_SAVE_INTERVAL = 60 * 60 * 1000; // 1 hour
+
+const storage = new Storage(); // Reuse or ensure single instance
+
+// +++ Bloom Filter Function Definitions +++
+async function initializeBloomFilter() {
+    const logger = _logger.child({ module: 'bloom-filter', method: 'initialize' });
+    try {
+        const exists = await redisConnection.exists(GLOBAL_VISITED_KEY);
+        // Try to load even if exists in case of partial load previously? Or assume exists means loaded. Let's assume exists is sufficient.
+        if (exists) {
+            logger.info(`Bloom filter ${GLOBAL_VISITED_KEY} already exists in Redis. Assuming loaded or will be used as is.`);
+            return;
+        }
+
+        logger.info(`Attempting to restore Bloom filter ${GLOBAL_VISITED_KEY} from GCP bucket ${GCP_BUCKET}...`);
+        await fs.mkdir(path.dirname(BLOOM_BACKUP_FILE_LOCAL), { recursive: true });
+
+        await storage.bucket(GCP_BUCKET).file(BLOOM_BACKUP_FILE_GCP).download({
+            destination: BLOOM_BACKUP_FILE_LOCAL,
+        });
+        logger.info(`Downloaded Bloom filter dump from GCP.`);
+
+        // Use fs.createReadStream with specific options if needed, or handle chunk type
+        // Node streams default to Buffer unless encoding is set, so direct iteration should work.
+        // Let's ensure error handling is robust around the stream.
+        const stream = createReadStream(BLOOM_BACKUP_FILE_LOCAL);
+        stream.on('error', (err) => {
+            logger.error('Error reading local Bloom filter dump stream', { error: err });
+            // Handle stream errors, maybe try to initialize empty filter
+        });
+
+        let iterator = 0;
+        try {
+             for await (const chunk of stream) { // This expects stream to be AsyncIterable<Buffer>
+                  const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+                  await redisConnection.call('BF.LOADCHUNK', GLOBAL_VISITED_KEY, iterator, bufferChunk);
+                  iterator++;
+             }
+        } catch (streamError) {
+             logger.error('Error iterating Bloom filter dump stream', { error: streamError });
+             throw streamError; // Rethrow to be caught by the outer catch
+        }
+
+        logger.info(`Successfully restored Bloom filter ${GLOBAL_VISITED_KEY} from GCP dump file.`);
+        await fs.unlink(BLOOM_BACKUP_FILE_LOCAL);
+
+    } catch (error) {
+        if (error.code === 404 || (error instanceof Error && error.message.includes('No such object'))) { // Handle GCP 'Not Found'
+             logger.warn(`Bloom filter dump not found in GCP. Initializing new filter ${GLOBAL_VISITED_KEY}.`);
+             try {
+                // Check existence again before reserving to handle race condition
+                const existsAgain = await redisConnection.exists(GLOBAL_VISITED_KEY);
+                if (!existsAgain) {
+                    await redisConnection.call('BF.RESERVE', GLOBAL_VISITED_KEY, BLOOM_ERROR_RATE, BLOOM_CAPACITY);
+                    logger.info(`Initialized new empty Bloom filter ${GLOBAL_VISITED_KEY}.`);
+                } else {
+                     logger.info(`Bloom filter ${GLOBAL_VISITED_KEY} created concurrently, skipping reserve.`);
+                }
+             } catch (initError) {
+                 if (!(initError instanceof Error && initError.message.includes('ERR item exists'))) {
+                    logger.error('Failed to reserve new Bloom filter after restore failed.', { error: initError });
+                    throw initError;
+                 } else {
+                    logger.info(`Bloom filter ${GLOBAL_VISITED_KEY} already exists, likely created concurrently.`);
+                 }
+             }
+        } else {
+            logger.error(`Error restoring Bloom filter ${GLOBAL_VISITED_KEY} from GCP:`, { error: error.message });
+            Sentry.captureException(error);
+            // Decide: Proceed with empty filter or throw? Let's proceed but log error.
+            // Ensure filter exists even if load failed
+            const existsAfterError = await redisConnection.exists(GLOBAL_VISITED_KEY);
+             if (!existsAfterError) {
+                 try {
+                     await redisConnection.call('BF.RESERVE', GLOBAL_VISITED_KEY, BLOOM_ERROR_RATE, BLOOM_CAPACITY);
+                     logger.info(`Initialized new empty Bloom filter ${GLOBAL_VISITED_KEY} after load error.`);
+                 } catch (reserveError) {
+                     logger.error('Failed to reserve Bloom filter after load error.', { error: reserveError });
+                 }
+             }
+        }
+    }
+}
+
+async function saveBloomFilter() {
+    const logger = _logger.child({ module: 'bloom-filter', method: 'save' });
+    logger.info(`Starting Bloom filter backup for ${GLOBAL_VISITED_KEY}...`);
+    let fileHandle;
+    try {
+        // Ensure directory exists
+        await fs.mkdir(path.dirname(BLOOM_BACKUP_FILE_LOCAL), { recursive: true });
+        fileHandle = await fs.open(BLOOM_BACKUP_FILE_LOCAL, 'w'); // Open file for writing
+
+        let iterator = 0;
+        while (true) {
+            // Use Buffer for command arguments where appropriate
+            const result = await redisConnection.call('BF.SCANDUMP', GLOBAL_VISITED_KEY, iterator);
+            // Type assertion for the result to handle the unknown type
+            const currentIteratorStr = Array.isArray(result) ? result[0] : '0';
+            const chunkData = Array.isArray(result) ? result[1] : null;
+            const currentIterator = Number(currentIteratorStr);
+
+            if (!chunkData) { // No more data
+                break;
+            }
+
+            // Ensure chunkData is a Buffer before writing
+            const bufferChunk = Buffer.isBuffer(chunkData) ? chunkData : Buffer.from(chunkData);
+            await fileHandle.write(bufferChunk);
+
+            if (currentIterator === 0) {
+                break; // Scan complete
+            }
+            iterator = currentIterator;
+        }
+        await fileHandle.close(); // Close the file handle
+        logger.info(`Bloom filter data saved to local file: ${BLOOM_BACKUP_FILE_LOCAL}`);
+
+        // Upload to GCP
+        await storage.bucket(GCP_BUCKET).upload(BLOOM_BACKUP_FILE_LOCAL, {
+             destination: BLOOM_BACKUP_FILE_GCP,
+        });
+        logger.info(`Successfully uploaded Bloom filter dump to GCP: ${BLOOM_BACKUP_FILE_GCP}`);
+
+    } catch (error) {
+        logger.error(`Failed to backup Bloom filter ${GLOBAL_VISITED_KEY}:`, { error: error.message });
+        Sentry.captureException(error);
+        if (fileHandle) {
+            await fileHandle.close().catch(closeErr => logger.warn('Error closing file handle during error handling', { closeErr }));
+        }
+    } finally {
+        try {
+            // Attempt cleanup even on error, check if file exists first
+            if (await fs.stat(BLOOM_BACKUP_FILE_LOCAL).catch(() => false)) {
+                 await fs.unlink(BLOOM_BACKUP_FILE_LOCAL);
+            }
+        } catch (unlinkError) {
+            if (unlinkError.code !== 'ENOENT') {
+                logger.warn(`Failed to delete local Bloom filter dump file: ${BLOOM_BACKUP_FILE_LOCAL}`, { error: unlinkError.message });
+            }
+        }
+    }
+}
+// --- End Bloom Filter Function Definitions ---
 
 async function finishCrawlIfNeeded(job: Job & { id: string }, sc: StoredCrawl) {
   if (await finishCrawlPre(job.data.crawl_id)) {
@@ -1056,24 +1212,9 @@ async function processJob(job: Job & { id: string }, token: string) {
   });
   logger.info(`🐂 Worker taking job ${job.id}`, { url: job.data.url });
   const start = Date.now();
-
-  // Check if the job URL is researchhub and block it immediately
-  // TODO: remove this once solve the root issue
-  // if (
-  //   job.data.url &&
-  //   (job.data.url.includes("researchhub.com") ||
-  //     job.data.url.includes("ebay.com"))
-  // ) {
-  //   logger.info(`🐂 Blocking job ${job.id} with URL ${job.data.url}`);
-  //   const data = {
-  //     success: false,
-  //     document: null,
-  //     project_id: job.data.project_id,
-  //     error:
-  //       "URL is blocked. Suspecious activity detected. Please contact help@firecrawl.com if you believe this is an error.",
-  //   };
-  //   return data;
-  // }
+  
+  // Define sc at the top level of the function so it's available in all blocks
+  let currentCrawlData: StoredCrawl | null = null;
 
   try {
     job.updateProgress({
@@ -1084,15 +1225,15 @@ async function processJob(job: Job & { id: string }, token: string) {
     });
 
     if (job.data.crawl_id) {
-      const sc = (await getCrawl(job.data.crawl_id))!;
-      if (sc && sc.cancelled) {
+      currentCrawlData = (await getCrawl(job.data.crawl_id))!;
+      if (currentCrawlData && currentCrawlData.cancelled) {
         throw new Error("Parent crawl/batch scrape was cancelled");
       }
 
       // Initialize backup service for new crawls
       if (job.data.crawl_id !== currentCrawlId) {
         currentCrawlId = job.data.crawl_id;
-        const domain = new URL(sc.originUrl!).hostname;
+        const domain = new URL(currentCrawlData.originUrl!).hostname;
         await backupService.initializeBackup(job.data.crawl_id, domain);
       }
     }
@@ -1256,17 +1397,21 @@ async function processJob(job: Job & { id: string }, token: string) {
 
       if (job.data.crawlerOptions !== null) {
         if (!sc.cancelled) {
+          // Explicitly type assert currentCrawlData as StoredCrawl to satisfy the type checker
+          // This is safe because we've checked it's not null above
+          const currentCrawlDataNonNull = currentCrawlData as StoredCrawl;
+          
           const crawler = crawlToCrawler(
             job.data.crawl_id,
-            sc,
-            doc.metadata.url ?? doc.metadata.sourceURL ?? sc.originUrl!,
-            job.data.crawlerOptions,
+            currentCrawlDataNonNull,
+            doc.metadata.url ?? doc.metadata.sourceURL ?? currentCrawlDataNonNull.originUrl!,
+            job.data.crawlerOptions
           );
 
           const links = crawler.filterLinks(
             await crawler.extractLinksFromHTML(
               rawHtml ?? "",
-              doc.metadata?.url ?? doc.metadata?.sourceURL ?? sc.originUrl!,
+              doc.metadata?.url ?? doc.metadata?.sourceURL ?? currentCrawlDataNonNull.originUrl!,
             ),
             Infinity,
             sc.crawlerOptions?.maxDepth ?? 10,
@@ -1276,8 +1421,27 @@ async function processJob(job: Job & { id: string }, token: string) {
           });
 
           for (const link of links) {
+            // Normalize the discovered link with currentCrawlData
+            const normalizedLink = normalizeURL(link, currentCrawlDataNonNull);
+
+            let existsResult: unknown;
+            try {
+                existsResult = await redisConnection.call('BF.EXISTS', GLOBAL_VISITED_KEY, Buffer.from(normalizedLink));
+            } catch (bfExistsError) {
+                logger.error('Bloom filter check failed', { url: normalizedLink, error: bfExistsError.message });
+                Sentry.captureException(bfExistsError);
+            }
+
+            // Type check the result
+            const exists = typeof existsResult === 'number' ? existsResult : 0;
+
+            if (exists === 1) {
+                logger.debug(`Skipping already visited URL (Bloom Filter): ${normalizedLink}`);
+                continue;
+            }
+
+            // Check original lockURL if still needed for other reasons, otherwise remove/simplify
             if (await lockURL(job.data.crawl_id, sc, link)) {
-              // This seems to work really welel
               const jobPriority = await getJobPriority({
                 team_id: sc.team_id,
                 basePriority: job.data.crawl_id ? 20 : 10,
@@ -1291,10 +1455,6 @@ async function processJob(job: Job & { id: string }, token: string) {
                   JSON.stringify(link),
                 { jobPriority, url: link },
               );
-
-              // console.log("team_id: ", sc.team_id)
-              // console.log("base priority: ", job.data.crawl_id ? 20 : 10)
-              // console.log("job priority: " , jobPriority, "\n\n\n")
 
               await addScrapeJob(
                 {
@@ -1325,10 +1485,7 @@ async function processJob(job: Job & { id: string }, token: string) {
                 newJobId: jobId,
               });
             } else {
-              // TODO: removed this, ok? too many 'not useful' logs (?) Mogery!
-              // logger.debug("Could not lock URL " + JSON.stringify(link), {
-              //   url: link,
-              // });
+              // logger.debug("Could not lock URL " + JSON.stringify(link)); // Might be redundant if BF caught it
             }
           }
 
@@ -1424,6 +1581,40 @@ async function processJob(job: Job & { id: string }, token: string) {
     }
 
     logger.info(`🐂 Job done ${job.id}`);
+
+    // --- ADD BF.ADD after successful scrape ---
+    // Find a suitable place *after* success is confirmed and *before* returning
+    // Example: Inside the main try block, after pipeline success, before return data
+
+    if (pipeline.success) {
+         try {
+             const urlToAdd = doc.metadata?.url ?? doc.metadata?.sourceURL ?? job.data.url;
+             let normalizedUrlToAdd: string | null = null;
+             
+             // Use the currentCrawlData from function scope
+             if (currentCrawlData) {
+                 normalizedUrlToAdd = normalizeURL(urlToAdd, currentCrawlData);
+             } else {
+                 try {
+                    normalizedUrlToAdd = new URL(urlToAdd).toString();
+                 } catch (e) { 
+                     logger.warn('Invalid URL for basic normalization', { urlToAdd }); 
+                 }
+             }
+
+             if (normalizedUrlToAdd) {
+                 await redisConnection.call('BF.ADD', GLOBAL_VISITED_KEY, Buffer.from(normalizedUrlToAdd));
+                 logger.debug(`Added URL to Bloom filter: ${normalizedUrlToAdd}`);
+             } else {
+                 logger.warn('Could not determine normalized URL to add to Bloom filter', { jobId: job.id, urlToAdd });
+             }
+         } catch (bfAddError) {
+             logger.error('Failed to add URL to Bloom filter', { jobId: job.id, error: bfAddError.message });
+             Sentry.captureException(bfAddError);
+         }
+    }
+    // --- END BF.ADD ---
+
     return data;
   } catch (error) {
     if (job.data.crawl_id) {
@@ -1537,6 +1728,11 @@ async function processJob(job: Job & { id: string }, token: string) {
 
 // Start all workers
 (async () => {
+  // +++ Load Bloom Filter +++
+  await initializeBloomFilter();
+  // +++ Start Periodic Saving +++
+  const bloomSaveTimer = setInterval(saveBloomFilter, BLOOM_SAVE_INTERVAL);
+
   await Promise.all([
     workerFun(getScrapeQueue(), processJobInternal),
     workerFun(getExtractQueue(), processExtractJobInternal),
@@ -1551,5 +1747,22 @@ async function processJob(job: Job & { id: string }, token: string) {
   }
 
   console.log("All jobs finished. Worker out!");
-  process.exit(0);
+
+  // Graceful Shutdown handling
+  process.on('SIGINT', async () => {
+    console.log("Received SIGINT. Shutting down gracefully...");
+    isShuttingDown = true;
+    clearInterval(bloomSaveTimer); // Stop saving timer
+    await saveBloomFilter(); // Perform final save
+    // ... existing shutdown logic ...
+    process.exit(0); // Ensure exit after cleanup
+  });
+  process.on('SIGTERM', async () => {
+     console.log("Received SIGTERM. Shutting down gracefully...");
+     isShuttingDown = true;
+     clearInterval(bloomSaveTimer);
+     await saveBloomFilter(); // Perform final save
+     // ... existing shutdown logic ...
+     process.exit(0);
+  });
 })();
