@@ -118,6 +118,7 @@ services:
     environment:
       <<: *common-env
       FLY_PROCESS_GROUP: worker
+      MAX_RAM: 0.92
       # Queue configuration
       BULL_CONCURRENCY: 3
       BULL_LIMITER_MAX: 30
@@ -128,7 +129,6 @@ services:
       BULL_REMOVE_ON_FAIL: true
       BULL_ATTEMPTS: 5
       BULL_BACKOFF: 15000
-      NODE_OPTIONS: "--max-old-space-size=40960"
     depends_on:
       - redis
       - playwright-service

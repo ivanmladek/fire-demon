@@ -4,19 +4,39 @@ import { chromium, Browser, BrowserContext, Route, Request as PlaywrightRequest,
 import dotenv from 'dotenv';
 import UserAgent from 'user-agents';
 import { getError } from './helpers/get_error';
+import { v4 as uuidv4 } from "uuid";
+import cors from "cors";
+import logger from './logger';
+import { cleanupBrowser } from "./cleanup";
 
 dotenv.config();
 
 const app = express();
-const PORT = 3003;
+const PORT = process.env.PORT || 3000;
 
+app.use(cors());
 app.use(bodyParser.json());
 
 const BLOCK_MEDIA = (process.env.BLOCK_MEDIA || 'False').toUpperCase() === 'TRUE';
 
-const PROXY_SERVER = process.env.PROXY_SERVER || null;
-const PROXY_USERNAME = process.env.PROXY_USERNAME || null;
-const PROXY_PASSWORD = process.env.PROXY_PASSWORD || null;
+// Proxy configuration
+const proxyConfig: {
+  server: string;
+  username: string;
+  password: string;
+  rotationEnabled: boolean;
+  rotationInterval: number;
+  retryCount: number;
+  retryDelay: number;
+} = {
+  server: process.env.PROXY_SERVER || '',
+  username: process.env.PROXY_USERNAME || '',
+  password: process.env.PROXY_PASSWORD || '',
+  rotationEnabled: process.env.PROXY_ROTATION_ENABLED === 'true',
+  rotationInterval: parseInt(process.env.PROXY_ROTATION_INTERVAL || '1'),
+  retryCount: parseInt(process.env.PROXY_RETRY_COUNT || '5'),
+  retryDelay: parseInt(process.env.PROXY_RETRY_DELAY || '15000'),
+};
 
 const AD_SERVING_DOMAINS = [
   'doubleclick.net',
@@ -51,7 +71,8 @@ interface UrlModel {
   check_selector?: string;
 }
 
-let browser: Browser;
+// Browser instance
+let browser: any = null;
 
 const initializeBrowser = async () => {
   browser = await chromium.launch({
@@ -65,8 +86,10 @@ const initializeBrowser = async () => {
       '--no-zygote',
       '--single-process',
       '--disable-gpu'
-    ]
+    ],
+    proxy: proxyConfig
   });
+  logger.info('Browser initialized successfully');
 };
 
 const createContext = async () => {
@@ -78,20 +101,8 @@ const createContext = async () => {
     viewport,
   };
 
-  if (PROXY_SERVER && PROXY_USERNAME && PROXY_PASSWORD) {
-    contextOptions.proxy = {
-      server: PROXY_SERVER,
-      username: PROXY_USERNAME,
-      password: PROXY_PASSWORD,
-    };
-  } else if (PROXY_SERVER) {
-    contextOptions.proxy = {
-      server: PROXY_SERVER,
-    };
-  }
-
-  if (contextOptions.proxy) {
-    console.log(`[Proxy Check] Creating context WITH proxy: Server=${contextOptions.proxy.server}, Username=${contextOptions.proxy.username}`);
+  if (proxyConfig.server) {
+    console.log(`[Proxy Check] Creating context WITH proxy: Server=${proxyConfig.server}, Username=${proxyConfig.username}`);
   } else {
     console.log(`[Proxy Check] Creating context WITHOUT proxy.`);
   }
@@ -165,6 +176,49 @@ const scrapePage = async (page: Page, url: string, waitUntil: 'load' | 'networki
   };
 };
 
+const rotateProxy = async () => {
+  if (!proxyConfig.rotationEnabled) return;
+  
+  // Implement proxy rotation logic here
+  // This could involve:
+  // 1. Using a proxy pool
+  // 2. Changing proxy credentials
+  // 3. Waiting for rate limit reset
+  console.log('Rotating proxy...');
+  await new Promise(resolve => setTimeout(resolve, proxyConfig.retryDelay));
+};
+
+interface ScrapeError extends Error {
+  status?: number;
+}
+
+const scrapeWithRetry = async (page: Page, url: string, waitUntil: 'load' | 'networkidle', waitAfterLoad: number, timeout: number, checkSelector: string | undefined, retryCount: number = proxyConfig.retryCount) => {
+  for (let attempt = 0; attempt < retryCount; attempt++) {
+    try {
+      const result = await scrapePage(page, url, waitUntil, waitAfterLoad, timeout, checkSelector);
+      
+      if (result.status === 429) {
+        console.log(`Rate limited (429) on attempt ${attempt + 1}/${retryCount}`);
+        await rotateProxy();
+        continue;
+      }
+      
+      return result;
+    } catch (error: unknown) {
+      const err = error as ScrapeError;
+      console.log(`Attempt ${attempt + 1}/${retryCount} failed:`, err.message);
+      
+      if (attempt < retryCount - 1) {
+        await rotateProxy();
+      } else {
+        throw err;
+      }
+    }
+  }
+  
+  throw new Error('Max retries exceeded');
+};
+
 app.post('/scrape', async (req: Request, res: Response) => {
   const { url, wait_after_load = 0, timeout = 15000, headers, check_selector }: UrlModel = req.body;
 
@@ -184,7 +238,7 @@ app.post('/scrape', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Invalid URL' });
   }
 
-  if (!PROXY_SERVER) {
+  if (!proxyConfig.server) {
     console.warn('⚠️ WARNING: No proxy server provided. Your IP address may be blocked.');
   }
 
@@ -202,19 +256,24 @@ app.post('/scrape', async (req: Request, res: Response) => {
 
   let result: Awaited<ReturnType<typeof scrapePage>>;
   try {
-    // Strategy 1: Normal
-    console.log('Attempting strategy 1: Normal load');
-    result = await scrapePage(page, url, 'load', wait_after_load, timeout, check_selector);
-  } catch (error) {
-    console.log('Strategy 1 failed, attempting strategy 2: Wait until networkidle');
+    // Try both strategies with retries
     try {
-      // Strategy 2: Wait until networkidle
-      result = await scrapePage(page, url, 'networkidle', wait_after_load, timeout, check_selector);
-    } catch (finalError) {
-      await page.close();
-      await context.close();
-      return res.status(500).json({ error: 'An error occurred while fetching the page.' });
+      console.log('Attempting strategy 1: Normal load');
+      result = await scrapeWithRetry(page, url, 'load', wait_after_load, timeout, check_selector);
+    } catch (error: unknown) {
+      const err = error as ScrapeError;
+      console.log('Strategy 1 failed, attempting strategy 2: Wait until networkidle');
+      result = await scrapeWithRetry(page, url, 'networkidle', wait_after_load, timeout, check_selector);
     }
+  } catch (finalError: unknown) {
+    const err = finalError as ScrapeError;
+    await page.close();
+    await context.close();
+    return res.status(500).json({ 
+      error: 'An error occurred while fetching the page.',
+      details: err.message,
+      status: err.status || 500
+    });
   }
 
   const pageError = result.status !== 200 ? getError(result.status) : undefined;
@@ -232,7 +291,21 @@ app.post('/scrape', async (req: Request, res: Response) => {
     content: result.content,
     pageStatusCode: result.status,
     pageError,
+    headers: result.headers
   });
+});
+
+// Add cleanup endpoint
+app.post("/cleanup", async (req, res) => {
+  try {
+    logger.info("Cleaning up Playwright instances");
+    await cleanupBrowser();
+    res.status(200).json({ success: true });
+  } catch (error) {
+    const err = error as Error;
+    logger.error("Error during cleanup", { error: err });
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 app.listen(PORT, () => {
