@@ -682,7 +682,6 @@ const workerFun = async (
   const worker = new Worker(queue.name, null, {
     connection: redisConnection,
     lockDuration: 1 * 60 * 1000, // 1 minute
-    // lockRenewTime: 15 * 1000, // 15 seconds
     stalledInterval: 30 * 1000, // 30 seconds
     maxStalledCount: 10, // 10 times
   });
@@ -690,12 +689,58 @@ const workerFun = async (
   worker.startStalledCheckTimer();
 
   const monitor = await systemMonitor;
+  let lastGcTime = Date.now();
+  const GC_INTERVAL = 5 * 60 * 1000; // 5 minutes
+  const MEMORY_THRESHOLD = 0.85; // 85% memory usage
+
+  // Function to perform garbage collection
+  const performGc = async () => {
+    const now = Date.now();
+    if (now - lastGcTime < GC_INTERVAL) return;
+
+    const memoryUsage = await monitor.checkMemoryUsage();
+    if (memoryUsage > MEMORY_THRESHOLD) {
+      logger.info("Performing garbage collection due to high memory usage", {
+        memoryUsage,
+        threshold: MEMORY_THRESHOLD
+      });
+      
+      // Force garbage collection
+      if (global.gc) {
+        global.gc();
+      }
+      
+      // Clean up Playwright instances
+      try {
+        const response = await fetch(`${process.env.PLAYWRIGHT_MICROSERVICE_URL}/cleanup`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        });
+        if (!response.ok) {
+          logger.error("Failed to cleanup Playwright instances", {
+            status: response.status,
+            statusText: response.statusText
+          });
+        }
+      } catch (error) {
+        logger.error("Error cleaning up Playwright instances", { error });
+      }
+      
+      lastGcTime = now;
+    }
+  };
 
   while (true) {
     if (isShuttingDown) {
       console.log("No longer accepting new jobs. SIGINT");
       break;
     }
+
+    // Check memory and perform GC if needed
+    await performGc();
+
     const token = uuidv4();
     const canAcceptConnection = await monitor.acceptConnection();
     if (!canAcceptConnection) {
@@ -708,9 +753,14 @@ const workerFun = async (
           cpuUsage: await monitor.checkCpuUsage(),
           memoryUsage: await monitor.checkMemoryUsage(),
         });
+        
+        // Force garbage collection when stalled
+        if (global.gc) {
+          global.gc();
+        }
       }
 
-      await sleep(cantAcceptConnectionInterval); // more sleep
+      await sleep(cantAcceptConnectionInterval);
       continue;
     } else {
       cantAcceptConnectionCount = 0;
