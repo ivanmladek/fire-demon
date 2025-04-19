@@ -116,12 +116,19 @@ async function finishCrawlIfNeeded(job: Job & { id: string }, sc: StoredCrawl) {
     ) {
       await redisConnection.set(
         "crawl:" + job.data.crawl_id + ":invisible_urls",
-        "done",
+        JSON.stringify(job.data.crawlerOptions.invisibleUrls),
         "EX",
         60 * 60 * 24,
       );
 
-      const sc = (await getCrawl(job.data.crawl_id))!;
+      const sc = (await getCrawl(job.data.crawl_id)) as StoredCrawl;
+
+      // Initialize backup service if this is a new crawl
+      if (currentCrawlId !== job.data.crawl_id && sc.originUrl) {
+        currentCrawlId = job.data.crawl_id;
+        const domain = new URL(sc.originUrl!).hostname;
+        await backupService.initializeBackup(job.data.crawl_id, domain);
+      }
 
       const visitedUrls = new Set(
         await redisConnection.smembers(
@@ -344,6 +351,9 @@ async function finishCrawlIfNeeded(job: Job & { id: string }, sc: StoredCrawl) {
         );
       }
     }
+
+    // Check and create backup after job is processed
+    await backupService.checkAndBackup();
   }
 }
 
@@ -1008,7 +1018,7 @@ async function processKickoffJob(job: Job & { id: string }, token: string) {
   } catch (error) {
     logger.error("An error occurred!", { error });
     await finishCrawlKickoff(job.data.crawl_id);
-    const sc = (await getCrawl(job.data.crawl_id)) as StoredCrawl;
+    const sc = (await getCrawl(job.data.crawl_id))!;
     if (sc) {
       await finishCrawlIfNeeded(job, sc);
     }
@@ -1074,16 +1084,16 @@ async function processJob(job: Job & { id: string }, token: string) {
     });
 
     if (job.data.crawl_id) {
-      const sc = (await getCrawl(job.data.crawl_id)) as StoredCrawl;
+      const sc = (await getCrawl(job.data.crawl_id))!;
       if (sc && sc.cancelled) {
         throw new Error("Parent crawl/batch scrape was cancelled");
       }
 
       // Initialize backup service for new crawls
       if (job.data.crawl_id !== currentCrawlId) {
-        const domain = new URL(sc.originUrl).hostname;
-        await backupService.initializeBackup(job.data.crawl_id, domain);
         currentCrawlId = job.data.crawl_id;
+        const domain = new URL(sc.originUrl!).hostname;
+        await backupService.initializeBackup(job.data.crawl_id, domain);
       }
     }
 
@@ -1154,7 +1164,7 @@ async function processJob(job: Job & { id: string }, token: string) {
     }
 
     if (job.data.crawl_id) {
-      const sc = (await getCrawl(job.data.crawl_id)) as StoredCrawl;
+      const sc = (await getCrawl(job.data.crawl_id))!;
 
       if (
         doc.metadata.url !== undefined &&
@@ -1417,7 +1427,7 @@ async function processJob(job: Job & { id: string }, token: string) {
     return data;
   } catch (error) {
     if (job.data.crawl_id) {
-      const sc = (await getCrawl(job.data.crawl_id)) as StoredCrawl;
+      const sc = (await getCrawl(job.data.crawl_id))!;
 
       logger.debug("Declaring job as done...");
       await addCrawlJobDone(job.data.crawl_id, job.id, false);
