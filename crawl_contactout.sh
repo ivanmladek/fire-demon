@@ -7,7 +7,7 @@ curl -X POST http://localhost:3002/v1/crawl \
 -d '{
   "url": "https://contactout.com/don-burke-36416",
   "allowBackwardLinks": true,
-  "limit": 1000,
+  "limit": 10000,
   "maxDepth": 10,
   "allowExternalLinks": false,
   "ignoreSitemap": true,
