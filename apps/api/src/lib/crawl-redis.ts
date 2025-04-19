@@ -261,6 +261,9 @@ export function generateURLPermutations(url: string | URL): URL[] {
   return [...new Set(permutations.map(x => x.href))].map(x => new URL(x));
 }
 
+// Add global visited URLs set key
+const GLOBAL_VISITED_URLS_KEY = "global:visited_urls";
+
 export async function lockURL(
   id: string,
   sc: StoredCrawl,
@@ -289,12 +292,18 @@ export async function lockURL(
   url = normalizeURL(url, sc);
   logger = logger.child({ url });
 
+  // Check if URL is already visited globally
+  const isGloballyVisited = await redisConnection.sismember(GLOBAL_VISITED_URLS_KEY, url);
+  if (isGloballyVisited) {
+    logger.debug("URL already visited in another crawl, skipping");
+    return false;
+  }
+
   let res: boolean;
   if (!sc.crawlerOptions?.deduplicateSimilarURLs) {
     res = (await redisConnection.sadd("crawl:" + id + ":visited", url)) !== 0;
   } else {
     const permutations = generateURLPermutations(url).map((x) => x.href);
-    // logger.debug("Adding URL permutations for URL " + JSON.stringify(url) + "...", { permutations });
     const x = await redisConnection.sadd(
       "crawl:" + id + ":visited",
       ...permutations,
@@ -305,16 +314,19 @@ export async function lockURL(
   await redisConnection.expire("crawl:" + id + ":visited", 24 * 60 * 60);
 
   if (res) {
-    await redisConnection.sadd("crawl:" + id + ":visited_unique", url);
+    // Add to both crawl-specific and global visited sets
+    await Promise.all([
+      redisConnection.sadd("crawl:" + id + ":visited_unique", url),
+      redisConnection.sadd(GLOBAL_VISITED_URLS_KEY, url)
+    ]);
     await redisConnection.expire(
       "crawl:" + id + ":visited_unique",
       24 * 60 * 60,
     );
+    // Set a long expiration for global visited URLs (30 days)
+    await redisConnection.expire(GLOBAL_VISITED_URLS_KEY, 30 * 24 * 60 * 60);
   }
 
-  // logger.debug("Locking URL " + JSON.stringify(url) + "... result: " + res, {
-  //   res,
-  // });
   return res;
 }
 
