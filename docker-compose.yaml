@@ -4,7 +4,8 @@ x-common-service: &common-service
   # NOTE: If you want to build the service locally,
   # uncomment the build: statement and comment out the image: statement
   # image: ghcr.io/mendableai/firecrawl
-  build: apps/api
+  build: 
+    context: apps/api
   restart: always
 
   ulimits:
@@ -51,6 +52,9 @@ x-common-env: &common-env
   SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
+  # GCP Configuration
+  GOOGLE_APPLICATION_CREDENTIALS: /var/secrets/google/credentials.json
+  GCP_BUCKET: ${GCP_BUCKET:-firecrawl-backups}
 
 services:
   playwright-service:
@@ -115,6 +119,10 @@ services:
 
   worker:
     <<: *common-service
+    build:
+      context: apps/api
+      dockerfile: Dockerfile
+      target: base
     environment:
       <<: *common-env
       FLY_PROCESS_GROUP: worker
@@ -129,11 +137,21 @@ services:
       BULL_REMOVE_ON_FAIL: true
       BULL_ATTEMPTS: 5
       BULL_BACKOFF: 15000
+      # Google Cloud SDK PATH
+      PATH: /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/root/google-cloud-sdk/bin
     depends_on:
       - redis
       - playwright-service
       - api
-    command: [ "pnpm", "run", "workers" ]
+    command: >
+      bash -c "
+      apt-get update && apt-get install -y curl python3 python3-pip &&
+      curl -sSL https://sdk.cloud.google.com | bash -s -- --disable-prompts &&
+      mkdir -p /var/secrets/google /app/data/crawl_backups &&
+      pnpm run workers"
+    volumes:
+      - /Users/jj/code/gdrive-410709-7f394f22402f.json:/var/secrets/google/credentials.json:ro
+      - ./data/crawl_backups:/app/data/crawl_backups
     deploy:
       resources:
         limits:
