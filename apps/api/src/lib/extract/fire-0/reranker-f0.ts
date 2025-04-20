@@ -21,8 +21,8 @@ interface RankingResult {
   }[];
 }
 
-export async function rerankDocuments_FO(
-  documents: (string | Record<string, string>)[],
+export async function rerankDocuments_F0(
+  documents: string[],
   query: string,
   topN = 3,
   model = "rerank-english-v3.0",

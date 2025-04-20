@@ -7,7 +7,8 @@
     "test:load": "artillery run --output ./load-test-results/test-run-report.json load-test.yml",
     "test:scrape": "npx jest --detectOpenHandles --forceExit --openHandlesTimeout=120000 --watchAll=false --testPathPattern=tests/scrape.test.ts",
     "test:crawl": "npx jest --detectOpenHandles --forceExit --openHandlesTimeout=120000 --watchAll=false --testPathPattern=tests/crawl.test.ts",
-    "test:schema-validation": "npx jest --detectOpenHandles --forceExit --openHandlesTimeout=120000 --watchAll=false --testPathPattern=tests/schema-validation.test.ts"
+    "test:schema-validation": "npx jest --detectOpenHandles --forceExit --openHandlesTimeout=120000 --watchAll=false --testPathPattern=tests/schema-validation.test.ts",
+    "test:backup": "npx ts-node tests/backup.test.ts"
   },
   "author": "",
   "license": "ISC",
