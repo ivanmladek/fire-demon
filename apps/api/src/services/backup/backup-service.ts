@@ -88,23 +88,27 @@ export class BackupService {
     const shouldBackupByTime = bufferSize > 0 && timeSinceLastBackup >= BACKUP_INTERVAL_MS;
 
     if (shouldBackupBySize || shouldBackupByTime) {
-       if (shouldBackupBySize) {
-         serviceLogger.info(`Triggering backup: Buffer size ${bufferSize} reached threshold ${BATCH_SIZE}`);
-       } else {
-         serviceLogger.info(`Triggering backup: Interval ${Math.round(timeSinceLastBackup / 1000)}s reached threshold ${BACKUP_INTERVAL_MS / 1000}s with ${bufferSize} items in buffer.`);
-       }
+      if (shouldBackupBySize) {
+        serviceLogger.info(`Triggering backup: Buffer size ${bufferSize} reached threshold ${BATCH_SIZE}`);
+      } else {
+        serviceLogger.info(`Triggering backup: Interval ${Math.round(timeSinceLastBackup / 1000)}s reached threshold ${BACKUP_INTERVAL_MS / 1000}s with ${bufferSize} items in buffer.`);
+      }
        
-       this.backupInProgress = true;
-       try {
-          const bufferToBackup = [...this.dataBuffer]; 
-          await this.createBackup(bufferToBackup);
-          this.dataBuffer = []; 
-          this.lastBackupTime = Date.now();
-       } catch (error) {
-          serviceLogger.error(`Backup attempt failed. Buffer not cleared.`, { error });
-       } finally {
-          this.backupInProgress = false;
-       }
+      this.backupInProgress = true;
+      try {
+        const bufferToBackup = [...this.dataBuffer]; 
+        await this.createBackup(bufferToBackup);
+        this.dataBuffer = []; 
+        this.lastBackupTime = Date.now();
+        serviceLogger.info(`Successfully backed up ${bufferToBackup.length} items. Total backups: ${this.backupCount}`);
+      } catch (error) {
+        serviceLogger.error(`Backup attempt failed. Buffer not cleared.`, { error });
+      } finally {
+        this.backupInProgress = false;
+      }
+    } else if (bufferSize > 0) {
+      // Log info about buffer status when not triggering a backup
+      serviceLogger.debug(`Buffer status: ${bufferSize}/${BATCH_SIZE} items, time since last backup: ${Math.round(timeSinceLastBackup / 1000)}s/${BACKUP_INTERVAL_MS / 1000}s`);
     }
   }
 
@@ -121,7 +125,8 @@ export class BackupService {
       batchSize: bufferToBackup.length
     });
 
-    serviceLogger.info(`Starting backup for batch ${currentBatchNumber} with ${bufferToBackup.length} items.`);
+    serviceLogger.info(`Starting backup for batch ${currentBatchNumber}. Total jobs completed: 
+${bufferToBackup.length}`);
 
     if (bufferToBackup.length === 0) {
       serviceLogger.warn(`Buffer is empty. Skipping backup for batch ${currentBatchNumber}.`);
