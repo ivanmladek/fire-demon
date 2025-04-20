@@ -30,10 +30,10 @@ export function getScrapeQueue() {
       connection: redisConnection,
       defaultJobOptions: {
         removeOnComplete: {
-          age: 3600, // 1 hour
+          age: 86400, // 24 hours
         },
         removeOnFail: {
-          age: 3600, // 1 hour
+          age: 86400, // 24 hours
         },
       },
     });

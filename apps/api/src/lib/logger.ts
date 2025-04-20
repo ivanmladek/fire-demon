@@ -3,11 +3,18 @@ import * as winston from "winston";
 import { configDotenv } from "dotenv";
 configDotenv();
 
+interface LogMetadata {
+  module?: string;
+  method?: string;
+  [key: string]: any;
+}
+
 const logFormat = winston.format.printf(
-  (info) =>
-    `${info.timestamp} ${info.level} [${info.metadata.module ?? ""}:${info.metadata.method ?? ""}]: ${info.message} ${
+  (info) => {
+    const metadata = (info.metadata || {}) as LogMetadata;
+    return `${info.timestamp} ${info.level} [${metadata.module ?? ""}:${metadata.method ?? ""}]: ${info.message} ${
       info.level.includes("error") || info.level.includes("warn")
-        ? JSON.stringify(info.metadata, (_, value) => {
+        ? JSON.stringify(metadata, (_, value) => {
             if (value instanceof Error) {
               return {
                 ...value,
@@ -21,7 +28,8 @@ const logFormat = winston.format.printf(
             }
           })
         : ""
-    }`,
+    }`;
+  }
 );
 
 export const logger = winston.createLogger({

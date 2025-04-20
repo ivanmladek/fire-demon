@@ -5,9 +5,9 @@ curl -X POST http://localhost:3002/v1/crawl \
 -H "Authorization: Bearer test-api-key-123" \
 -H "Content-Type: application/json" \
 -d '{
-  "url": "https://contactout.com/James-McCORMICK-144666",
+  "url": "https://contactout.com/Amber-Badgett-53430",
   "allowBackwardLinks": true,
-  "limit": 20000,
+  "limit": 5000,
   "maxDepth": 10,
   "allowExternalLinks": false,
   "ignoreSitemap": true,
