@@ -116,149 +116,128 @@ const BLOOM_ERROR_RATE = 0.01;
 const BLOOM_BACKUP_FILE_LOCAL = '/app/data/crawl_backups/global_visited_bloom_latest.dump';
 const BLOOM_BACKUP_FILE_GCP = 'global_visited_bloom_latest.dump';
 const GCP_BUCKET = process.env.GCP_BUCKET || 'firecrawl-backups'; // Ensure this is set
-const BLOOM_SAVE_INTERVAL = 60 * 60 * 1000; // 1 hour
+const BLOOM_SAVE_INTERVAL = 60 * 60 * 1000; // 1 hour - We'll keep this as a backup
+const BLOOM_SAVE_OPERATIONS = 2000; // Save after 2,000 operations (changed from 10,000)
+
+// Track number of operations since last save
+let bloomOperationsCounter = 0;
+let lastBloomBackupTime = Date.now();
 
 const storage = new Storage(); // Reuse or ensure single instance
 
 // +++ Bloom Filter Function Definitions +++
 async function initializeBloomFilter() {
-    const logger = _logger.child({ module: 'bloom-filter', method: 'initialize' });
+    const logger = _logger.child({
+        module: "queue-worker",
+        method: "initializeBloomFilter",
+    });
+    
+    logger.info("Initializing Bloom filter - comparing local and GCP versions");
+    
     try {
-        const exists = await redisConnection.exists(GLOBAL_VISITED_KEY);
-        // Try to load even if exists in case of partial load previously? Or assume exists means loaded. Let's assume exists is sufficient.
-        if (exists) {
-            logger.info(`Bloom filter ${GLOBAL_VISITED_KEY} already exists in Redis. Assuming loaded or will be used as is.`);
-            return;
-        }
-
-        logger.info(`Attempting to restore Bloom filter ${GLOBAL_VISITED_KEY} from GCP bucket ${GCP_BUCKET}...`);
-        await fs.mkdir(path.dirname(BLOOM_BACKUP_FILE_LOCAL), { recursive: true });
-
-        await storage.bucket(GCP_BUCKET).file(BLOOM_BACKUP_FILE_GCP).download({
-            destination: BLOOM_BACKUP_FILE_LOCAL,
-        });
-        logger.info(`Downloaded Bloom filter dump from GCP.`);
-
-        // Use fs.createReadStream with specific options if needed, or handle chunk type
-        // Node streams default to Buffer unless encoding is set, so direct iteration should work.
-        // Let's ensure error handling is robust around the stream.
-        const stream = createReadStream(BLOOM_BACKUP_FILE_LOCAL);
-        stream.on('error', (err) => {
-            logger.error('Error reading local Bloom filter dump stream', { error: err });
-            // Handle stream errors, maybe try to initialize empty filter
-        });
-
-        let iterator = 0;
-        try {
-             for await (const chunk of stream) { // This expects stream to be AsyncIterable<Buffer>
-                  const bufferChunk = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-                  await redisConnection.call('BF.LOADCHUNK', GLOBAL_VISITED_KEY, iterator, bufferChunk);
-                  iterator++;
-             }
-        } catch (streamError) {
-             logger.error('Error iterating Bloom filter dump stream', { error: streamError });
-             throw streamError; // Rethrow to be caught by the outer catch
-        }
-
-        logger.info(`Successfully restored Bloom filter ${GLOBAL_VISITED_KEY} from GCP dump file.`);
-        await fs.unlink(BLOOM_BACKUP_FILE_LOCAL);
-
-    } catch (error) {
-        if (error.code === 404 || (error instanceof Error && error.message.includes('No such object'))) { // Handle GCP 'Not Found'
-             logger.warn(`Bloom filter dump not found in GCP. Initializing new filter ${GLOBAL_VISITED_KEY}.`);
-             try {
-                // Check existence again before reserving to handle race condition
-                const existsAgain = await redisConnection.exists(GLOBAL_VISITED_KEY);
-                if (!existsAgain) {
-                    await redisConnection.call('BF.RESERVE', GLOBAL_VISITED_KEY, BLOOM_ERROR_RATE, BLOOM_CAPACITY);
-                    logger.info(`Initialized new empty Bloom filter ${GLOBAL_VISITED_KEY}.`);
-                } else {
-                     logger.info(`Bloom filter ${GLOBAL_VISITED_KEY} created concurrently, skipping reserve.`);
+        // First check if a local Bloom filter exists
+        const localExists = await redisConnection.exists(GLOBAL_VISITED_KEY);
+        
+        // Get info about local bloom filter if it exists
+        let localBloomSize = 0;
+        if (localExists) {
+            try {
+                const infoResult = await redisConnection.call('BF.INFO', GLOBAL_VISITED_KEY);
+                // Find size-related info in the response
+                if (Array.isArray(infoResult)) {
+                    for (let i = 0; i < infoResult.length; i += 2) {
+                        if (infoResult[i] === 'items') {
+                            localBloomSize = Number(infoResult[i+1] || 0);
+                            logger.info(`Local Bloom filter exists with items: ${localBloomSize}`);
+                            break;
+                        }
+                    }
                 }
-             } catch (initError) {
-                 if (!(initError instanceof Error && initError.message.includes('ERR item exists'))) {
-                    logger.error('Failed to reserve new Bloom filter after restore failed.', { error: initError });
-                    throw initError;
-                 } else {
-                    logger.info(`Bloom filter ${GLOBAL_VISITED_KEY} already exists, likely created concurrently.`);
-                 }
-             }
+            } catch (infoError) {
+                logger.warn("Error getting local Bloom filter info", { error: infoError });
+            }
         } else {
-            logger.error(`Error restoring Bloom filter ${GLOBAL_VISITED_KEY} from GCP:`, { error: error.message });
-            Sentry.captureException(error);
-            // Decide: Proceed with empty filter or throw? Let's proceed but log error.
-            // Ensure filter exists even if load failed
-            const existsAfterError = await redisConnection.exists(GLOBAL_VISITED_KEY);
-             if (!existsAfterError) {
-                 try {
-                     await redisConnection.call('BF.RESERVE', GLOBAL_VISITED_KEY, BLOOM_ERROR_RATE, BLOOM_CAPACITY);
-                     logger.info(`Initialized new empty Bloom filter ${GLOBAL_VISITED_KEY} after load error.`);
-                 } catch (reserveError) {
-                     logger.error('Failed to reserve Bloom filter after load error.', { error: reserveError });
-                 }
-             }
+            logger.info("No local Bloom filter exists");
         }
+        
+        // Let the BackupService handle comparison and restoration
+        // It will automatically use the latest timestamped file
+        const restored = await backupService.restoreBloomFilter();
+        if (restored) {
+            logger.info("Successfully initialized Bloom filter");
+        } else {
+            logger.error("Failed to initialize Bloom filter");
+        }
+    } catch (error) {
+        logger.error("Error during Bloom filter initialization", { error });
+        // Fallback to standard restore
+        await backupService.restoreBloomFilter();
+    }
+    
+    // Reset counter
+    bloomOperationsCounter = 0;
+    lastBloomBackupTime = Date.now();
+}
+
+async function incrementBloomOperationsAndBackup(visitedUrl: string) {
+    bloomOperationsCounter++;
+    
+    // Check if we need to backup based on operation count
+    if (bloomOperationsCounter >= BLOOM_SAVE_OPERATIONS) {
+        const logger = _logger.child({
+            module: "queue-worker",
+            method: "incrementBloomOperationsAndBackup",
+        });
+        
+        logger.info(`Triggering Bloom filter backup after ${BLOOM_SAVE_OPERATIONS} operations`, {
+            counter: bloomOperationsCounter,
+            lastUrl: visitedUrl
+        });
+        
+        // Reset counter first to avoid multiple simultaneous backups
+        bloomOperationsCounter = 0;
+        lastBloomBackupTime = Date.now();
+        
+        // Backup in background
+        backupService.backupBloomFilter()
+            .then(success => {
+                if (success) {
+                    logger.info("Successfully backed up Bloom filter to GCP");
+                } else {
+                    logger.error("Failed to backup Bloom filter to GCP");
+                }
+            })
+            .catch(error => {
+                logger.error("Error during Bloom filter backup", { error });
+            });
+    }
+    
+    // Also check time-based backup as a fallback
+    const timeSinceLastBackup = Date.now() - lastBloomBackupTime;
+    if (timeSinceLastBackup >= BLOOM_SAVE_INTERVAL) {
+        const logger = _logger.child({
+            module: "queue-worker",
+            method: "incrementBloomOperationsAndBackup",
+        });
+        
+        logger.info(`Triggering time-based Bloom filter backup after ${timeSinceLastBackup/1000} seconds`);
+        
+        // Reset time tracker
+        lastBloomBackupTime = Date.now();
+        
+        // Backup in background
+        backupService.backupBloomFilter().catch(error => {
+            logger.error("Error during time-based Bloom filter backup", { error });
+        });
     }
 }
 
 async function saveBloomFilter() {
-    const logger = _logger.child({ module: 'bloom-filter', method: 'save' });
-    logger.info(`Starting Bloom filter backup for ${GLOBAL_VISITED_KEY}...`);
-    let fileHandle;
-    try {
-        // Ensure directory exists
-        await fs.mkdir(path.dirname(BLOOM_BACKUP_FILE_LOCAL), { recursive: true });
-        fileHandle = await fs.open(BLOOM_BACKUP_FILE_LOCAL, 'w'); // Open file for writing
-
-        let iterator = 0;
-        while (true) {
-            // Use Buffer for command arguments where appropriate
-            const result = await redisConnection.call('BF.SCANDUMP', GLOBAL_VISITED_KEY, iterator);
-            // Type assertion for the result to handle the unknown type
-            const currentIteratorStr = Array.isArray(result) ? result[0] : '0';
-            const chunkData = Array.isArray(result) ? result[1] : null;
-            const currentIterator = Number(currentIteratorStr);
-
-            if (!chunkData) { // No more data
-                break;
-            }
-
-            // Ensure chunkData is a Buffer before writing
-            const bufferChunk = Buffer.isBuffer(chunkData) ? chunkData : Buffer.from(chunkData);
-            await fileHandle.write(bufferChunk);
-
-            if (currentIterator === 0) {
-                break; // Scan complete
-            }
-            iterator = currentIterator;
-        }
-        await fileHandle.close(); // Close the file handle
-        logger.info(`Bloom filter data saved to local file: ${BLOOM_BACKUP_FILE_LOCAL}`);
-
-        // Upload to GCP
-        await storage.bucket(GCP_BUCKET).upload(BLOOM_BACKUP_FILE_LOCAL, {
-             destination: BLOOM_BACKUP_FILE_GCP,
-        });
-        logger.info(`Successfully uploaded Bloom filter dump to GCP: ${BLOOM_BACKUP_FILE_GCP}`);
-
-    } catch (error) {
-        logger.error(`Failed to backup Bloom filter ${GLOBAL_VISITED_KEY}:`, { error: error.message });
-        Sentry.captureException(error);
-        if (fileHandle) {
-            await fileHandle.close().catch(closeErr => logger.warn('Error closing file handle during error handling', { closeErr }));
-        }
-    } finally {
-        try {
-            // Attempt cleanup even on error, check if file exists first
-            if (await fs.stat(BLOOM_BACKUP_FILE_LOCAL).catch(() => false)) {
-                 await fs.unlink(BLOOM_BACKUP_FILE_LOCAL);
-            }
-        } catch (unlinkError) {
-            if (unlinkError.code !== 'ENOENT') {
-                logger.warn(`Failed to delete local Bloom filter dump file: ${BLOOM_BACKUP_FILE_LOCAL}`, { error: unlinkError.message });
-            }
-        }
-    }
+    // Use the BackupService to backup the bloom filter
+    await backupService.backupBloomFilter();
+    // Reset counter and time
+    bloomOperationsCounter = 0;
+    lastBloomBackupTime = Date.now();
 }
 // --- End Bloom Filter Function Definitions ---
 
@@ -1392,6 +1371,17 @@ async function processJob(job: Job & { id: string }, token: string) {
       logger.debug("Declaring job as done...");
       await addCrawlJobDone(job.data.crawl_id, job.id, true);
 
+      // Add job data to backup buffer
+      if (doc && doc.metadata?.url) {
+        const scrapedData = {
+          url: doc.metadata.url,
+          scrape_timestamp: new Date().toISOString(),
+          content: doc,
+          links_found: doc.links?.map((link: any) => link.href)
+        };
+        backupService.addDataToBuffer(scrapedData);
+      }
+
       // Check for backup after job completion
       await backupService.checkAndBackup();
 
@@ -1605,6 +1595,7 @@ async function processJob(job: Job & { id: string }, token: string) {
              if (normalizedUrlToAdd) {
                  await redisConnection.call('BF.ADD', GLOBAL_VISITED_KEY, Buffer.from(normalizedUrlToAdd));
                  logger.debug(`Added URL to Bloom filter: ${normalizedUrlToAdd}`);
+                 await incrementBloomOperationsAndBackup(normalizedUrlToAdd);
              } else {
                  logger.warn('Could not determine normalized URL to add to Bloom filter', { jobId: job.id, urlToAdd });
              }
@@ -1766,3 +1757,60 @@ async function processJob(job: Job & { id: string }, token: string) {
      process.exit(0);
   });
 })();
+
+// Update the checkUrlVisitedBloom function to count operations and trigger save
+async function checkUrlVisitedBloom(url: string, setCrawlId: string | null = null): Promise<boolean> {
+  try {
+    // Normalize the URL to ensure consistent checking
+    let normalizedUrl: string;
+    try {
+      normalizedUrl = new URL(url).toString();
+    } catch (error) {
+      _logger.warn(`Invalid URL in checkUrlVisitedBloom: ${url}`, {
+        module: 'bloom-filter',
+        url
+      });
+      return false; // Can't check invalid URLs
+    }
+    
+    const exists = await redisConnection.call('BF.EXISTS', GLOBAL_VISITED_KEY, normalizedUrl);
+    
+    if (!exists) {
+      await redisConnection.call('BF.ADD', GLOBAL_VISITED_KEY, normalizedUrl);
+      
+      // Increment operation counter and save if threshold reached
+      bloomOperationsCounter++;
+      if (bloomOperationsCounter >= BLOOM_SAVE_OPERATIONS) {
+        _logger.info(`Bloom operations counter reached ${BLOOM_SAVE_OPERATIONS}, triggering save...`, {
+          module: 'bloom-filter',
+          bloomOperationsCounter
+        });
+        // Reset counter first to avoid race conditions if save takes time
+        bloomOperationsCounter = 0;
+        // Don't await to avoid blocking
+        saveBloomFilter().catch(error => {
+          _logger.error(`Error saving Bloom filter after ${BLOOM_SAVE_OPERATIONS} operations`, {
+            module: 'bloom-filter',
+            error: error.message
+          });
+        });
+      }
+      
+      if (setCrawlId) {
+        // Add URL to this crawl's visited set
+        await redisConnection.sadd(`crawl:${setCrawlId}:visited`, normalizedUrl);
+        await redisConnection.sadd(`crawl:${setCrawlId}:visited_unique`, normalizedUrl);
+      }
+      return false;
+    }
+    
+    return true;
+  } catch (error) {
+    _logger.error(`Error checking URL in Bloom filter: ${error}`, {
+      module: 'bloom-filter',
+      url
+    });
+    // On error, assume not visited to be safe
+    return false;
+  }
+}
