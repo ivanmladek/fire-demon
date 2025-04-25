@@ -68,7 +68,7 @@ services:
       BLOCK_MEDIA: true
       # Browser optimization settings
       BROWSER_CONTEXT_OPTIONS: '{"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36","viewport":{"width":1920,"height":1080},"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"javaScriptEnabled":true}'
-      MAX_CONCURRENT_PAGES: 10
+      MAX_CONCURRENT_PAGES: 5
       PAGE_TIMEOUT: 30000
       RETRY_COUNT: 1
       RETRY_DELAY: 10000
@@ -128,8 +128,8 @@ services:
       FLY_PROCESS_GROUP: worker
       MAX_RAM: 0.92
       # Queue configuration
-      BULL_CONCURRENCY: 100
-      BULL_LIMITER_MAX: 30000
+      BULL_CONCURRENCY: 50
+      BULL_LIMITER_MAX: 3000
       BULL_LIMITER_DURATION: 60000
       BULL_LOCK_DURATION: 600000
       BULL_STALLED_INTERVAL: 60000
