@@ -89,10 +89,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 70G
+          memory: 30G
           cpus: '16'
         reservations:
-          memory: 48G
+          memory: 5G
           cpus: '8'
 
   api:
@@ -111,11 +111,11 @@ services:
     deploy:
       resources:
         limits:
+          memory: 32G
+          cpus: '8'
+        reservations:
           memory: 16G
           cpus: '4'
-        reservations:
-          memory: 8G
-          cpus: '2'
 
   worker:
     <<: *common-service
@@ -155,15 +155,12 @@ services:
     volumes:
       - /Users/jj/code/gdrive-410709-7f394f22402f.json:/var/secrets/google/credentials.json:ro
       - ./data/crawl_backups:/app/data/crawl_backups
-      - ./apps/api/src:/app/src
+      # - ./apps/api/src:/app/src
+      - ./data/worker-cache:/root/.cache
     deploy:
       resources:
         limits:
-          memory: 48G
-          cpus: '8'
-        reservations:
-          memory: 32G
-          cpus: '4'
+          memory: 10G
 
   redis:
     # NOTE: If you want to use Valkey (open source) instead of Redis (source available),
@@ -175,6 +172,8 @@ services:
     networks:
       - backend
     command: redis-server --bind 0.0.0.0 --maxmemory 20gb --maxmemory-policy allkeys-lru --loadmodule /opt/redis-stack/lib/redisbloom.so --protected-mode no
+    volumes:
+      - ./data/redis:/data
     deploy:
       resources:
         limits:
