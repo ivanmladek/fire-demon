@@ -35,7 +35,7 @@ spec:
       - envFrom:
         - configMapRef:
             name: playwright-service-config
-        image: gcr.io/gdrive-410709/firecrawl-playwright:latest
+        image: gcr.io/firecrawl-deployment-410709/playwright-service:latest
         imagePullPolicy: Always
         name: playwright-service
         ports:
@@ -52,7 +52,7 @@ spec:
         terminationMessagePolicy: File
       dnsPolicy: ClusterFirst
       imagePullSecrets:
-      - name: gcr-access
+      - name: docker-registry-secret
       restartPolicy: Always
       schedulerName: default-scheduler
       securityContext: {}

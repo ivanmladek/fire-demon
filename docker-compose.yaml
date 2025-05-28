@@ -46,9 +46,9 @@ x-common-env: &common-env
   SERPER_API_KEY: ${SERPER_API_KEY}
   SEARCHAPI_API_KEY: ${SEARCHAPI_API_KEY}
   LOGGING_LEVEL: ${LOGGING_LEVEL}
-  PROXY_SERVER: core-residential.evomi.com:1000
-  PROXY_USERNAME: happyocea3
-  PROXY_PASSWORD: Gpvo1W5Dtt8eRJHDhkXo_country-US
+  PROXY_SERVER: gate.nodemaven.com:8080
+  PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-any-type-mobile-ipv4-true-sid-591435f3c9ed4-filter-medium
+  PROXY_PASSWORD: ktonj4oufu
   SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
@@ -62,9 +62,9 @@ services:
     restart: always
     environment:
       PORT: 3000
-      PROXY_SERVER: core-residential.evomi.com:1000
-      PROXY_USERNAME: happyocea3
-      PROXY_PASSWORD: Gpvo1W5Dtt8eRJHDhkXo_country-US
+      PROXY_SERVER: gate.nodemaven.com:8080
+      PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-any-type-mobile-ipv4-true-sid-591435f3c9ed4-filter-medium
+      PROXY_PASSWORD: ktonj4oufu
       BLOCK_MEDIA: true
       # Browser optimization settings
       BROWSER_CONTEXT_OPTIONS: '{"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36","viewport":{"width":1920,"height":1080},"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"javaScriptEnabled":true}'

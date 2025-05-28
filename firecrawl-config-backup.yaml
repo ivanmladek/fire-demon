@@ -1,0 +1,14 @@
+apiVersion: v1
+data:
+  GCS_BUCKET_NAME: firecrawl-jobs-1744874008
+  PLAYWRIGHT_SERVICE_URL: http://playwright-service:3000
+  PROXY_PASSWORD: Gpvo1W5Dtt8eRJHDhkXo_country-US
+  PROXY_SERVER: core-residential.evomi.com:1000
+  PROXY_USERNAME: happyocea3
+kind: ConfigMap
+metadata:
+  creationTimestamp: "2025-05-28T08:27:13Z"
+  name: firecrawl-config
+  namespace: firecrawl-prod
+  resourceVersion: "1748420833279375002"
+  uid: 08a0fcd6-305b-48b3-ba8e-43232a5e35e3

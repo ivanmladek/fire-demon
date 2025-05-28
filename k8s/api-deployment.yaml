@@ -4,7 +4,7 @@ metadata:
   annotations:
     deployment.kubernetes.io/revision: "4"
     kubectl.kubernetes.io/last-applied-configuration: |
-      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"name":"api","namespace":"firecrawl-prod"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"api"}},"template":{"metadata":{"labels":{"app":"api"}},"spec":{"containers":[{"args":["pnpm","run","start:production"],"env":[{"name":"FLY_PROCESS_GROUP","value":"app"}],"envFrom":[{"configMapRef":{"name":"firecrawl-config"}},{"secretRef":{"name":"firecrawl-secret"}}],"image":"gcr.io/gdrive-410709/firecrawl-api:latest","imagePullPolicy":"Always","livenessProbe":{"failureThreshold":3,"httpGet":{"path":"/v0/health/liveness","port":3002},"initialDelaySeconds":30,"periodSeconds":30,"successThreshold":1,"timeoutSeconds":5},"name":"api","ports":[{"containerPort":3002}],"readinessProbe":{"failureThreshold":3,"httpGet":{"path":"/v0/health/readiness","port":3002},"initialDelaySeconds":30,"periodSeconds":30,"successThreshold":1,"timeoutSeconds":5}}],"imagePullSecrets":[{"name":"gcr-access"}]}}}}
+      {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"name":"api","namespace":"firecrawl-prod"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"api"}},"template":{"metadata":{"labels":{"app":"api"}},"spec":{"containers":[{"args":["pnpm","run","start:production"],"env":[{"name":"FLY_PROCESS_GROUP","value":"app"}],"envFrom":[{"configMapRef":{"name":"firecrawl-config"}},{"secretRef":{"name":"firecrawl-secret"}}],"image":"gcr.io/firecrawl-deployment-410709/api:latest","imagePullPolicy":"Always","livenessProbe":{"failureThreshold":3,"httpGet":{"path":"/v0/health/liveness","port":3002},"initialDelaySeconds":30,"periodSeconds":30,"successThreshold":1,"timeoutSeconds":5},"name":"api","ports":[{"containerPort":3002}],"readinessProbe":{"failureThreshold":3,"httpGet":{"path":"/v0/health/readiness","port":3002},"initialDelaySeconds":30,"periodSeconds":30,"successThreshold":1,"timeoutSeconds":5}}],"imagePullSecrets":[{"name":"docker-registry-secret"}]}}}}
   creationTimestamp: "2025-04-15T09:46:17Z"
   generation: 4
   name: api
@@ -55,7 +55,7 @@ spec:
         envFrom:
         - configMapRef:
             name: firecrawl-config
-        image: gcr.io/gdrive-410709/firecrawl-api:latest
+        image: gcr.io/firecrawl-deployment-410709/api:latest
         imagePullPolicy: Always
         livenessProbe:
           failureThreshold: 3
@@ -86,7 +86,7 @@ spec:
         terminationMessagePolicy: File
       dnsPolicy: ClusterFirst
       imagePullSecrets:
-      - name: gcr-access
+      - name: docker-registry-secret
       restartPolicy: Always
       schedulerName: default-scheduler
       securityContext: {}

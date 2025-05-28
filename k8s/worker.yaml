@@ -23,7 +23,7 @@ spec:
                 operator: DoesNotExist
       containers:
       - name: worker
-        image: gcr.io/gdrive-410709/firecrawl:latest
+        image: gcr.io/firecrawl-deployment-410709/api:latest
         imagePullPolicy: IfNotPresent
         args: ["pnpm", "run", "workers"]
         env:
@@ -78,4 +78,6 @@ spec:
       volumes:
       - name: gcs-creds
         secret:
-          secretName: gcs-credentials 
+          secretName: gcs-credentials
+      imagePullSecrets:
+      - name: docker-registry-secret 

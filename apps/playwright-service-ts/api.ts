@@ -75,7 +75,7 @@ interface UrlModel {
 let browser: any = null;
 
 const initializeBrowser = async () => {
-  browser = await chromium.launch({
+  const launchOptions: any = {
     headless: true,
     args: [
       '--no-sandbox',
@@ -84,12 +84,37 @@ const initializeBrowser = async () => {
       '--disable-accelerated-2d-canvas',
       '--no-first-run',
       '--no-zygote',
-      '--single-process',
-      '--disable-gpu'
-    ],
-    proxy: proxyConfig
-  });
-  logger.info('Browser initialized successfully');
+      '--disable-gpu',
+      '--disable-web-security',
+      '--disable-features=IsolateOrigins,site-per-process',
+      '--disable-blink-features=AutomationControlled'
+    ]
+  };
+  
+  // Check if proxy configuration is properly set
+  if (!proxyConfig.server) {
+    console.error('ERROR: Proxy server is required but not configured!');
+    console.error('Please set PROXY_SERVER environment variable');
+    throw new Error('Proxy server configuration is required but missing');
+  }
+  
+  // Ensure proxy server has protocol prefix
+  let proxyServer = proxyConfig.server;
+  if (!proxyServer.startsWith('http://') && !proxyServer.startsWith('https://')) {
+    proxyServer = `http://${proxyServer}`;
+  }
+  
+  // Add proxy configuration with separate username and password
+  launchOptions.proxy = {
+    server: proxyServer,
+    username: proxyConfig.username,
+    password: proxyConfig.password
+  };
+  
+  console.log(`Launching browser with proxy: ${proxyServer} (username: ${proxyConfig.username})`);
+  
+  browser = await chromium.launch(launchOptions);
+  logger.info('Browser initialized successfully with proxy configuration');
 };
 
 const createContext = async () => {
@@ -242,57 +267,91 @@ app.post('/scrape', async (req: Request, res: Response) => {
     console.warn('⚠️ WARNING: No proxy server provided. Your IP address may be blocked.');
   }
 
-  if (!browser) {
-    await initializeBrowser();
-  }
+  let context: BrowserContext | null = null;
+  let page: Page | null = null;
 
-  const context = await createContext();
-  const page = await context.newPage();
-
-  // Set headers if provided
-  if (headers) {
-    await page.setExtraHTTPHeaders(headers);
-  }
-
-  let result: Awaited<ReturnType<typeof scrapePage>>;
   try {
-    // Try both strategies with retries
-    try {
-      console.log('Attempting strategy 1: Normal load');
-      result = await scrapeWithRetry(page, url, 'load', wait_after_load, timeout, check_selector);
-    } catch (error: unknown) {
-      const err = error as ScrapeError;
-      console.log('Strategy 1 failed, attempting strategy 2: Wait until networkidle');
-      result = await scrapeWithRetry(page, url, 'networkidle', wait_after_load, timeout, check_selector);
+    // Initialize browser if needed
+    if (!browser) {
+      await initializeBrowser();
     }
-  } catch (finalError: unknown) {
-    const err = finalError as ScrapeError;
-    await page.close();
-    await context.close();
+
+    // Create a new context for this request
+    context = await createContext();
+    if (!context) {
+      throw new Error('Failed to create browser context');
+    }
+    page = await context.newPage();
+
+    // Set headers if provided
+    if (headers) {
+      await page.setExtraHTTPHeaders(headers);
+    }
+
+    let result: Awaited<ReturnType<typeof scrapePage>>;
+    try {
+      // Try both strategies with retries
+      try {
+        console.log('Attempting strategy 1: Normal load');
+        result = await scrapeWithRetry(page, url, 'load', wait_after_load, timeout, check_selector);
+      } catch (error: unknown) {
+        const err = error as ScrapeError;
+        console.log('Strategy 1 failed, attempting strategy 2: Wait until networkidle');
+        result = await scrapeWithRetry(page, url, 'networkidle', wait_after_load, timeout, check_selector);
+      }
+    } catch (finalError: unknown) {
+      const err = finalError as ScrapeError;
+      throw err;
+    }
+
+    const pageError = result.status !== 200 ? getError(result.status) : undefined;
+
+    if (!pageError) {
+      console.log(`✅ Scrape successful!`);
+    } else {
+      console.log(`🚨 Scrape failed with status code: ${result.status} ${pageError}`);
+    }
+
+    return res.json({
+      content: result.content,
+      pageStatusCode: result.status,
+      pageError,
+      headers: result.headers
+    });
+
+  } catch (error: unknown) {
+    const err = error as ScrapeError;
+    console.error('Error during scraping:', err.message);
+    
+    // Check if browser crashed
+    if (err.message && err.message.includes('Target page, context or browser has been closed')) {
+      console.error('Browser crashed, attempting to reinitialize...');
+      browser = null;
+      // Don't try to reinitialize here, let the next request do it
+    }
+    
     return res.status(500).json({ 
       error: 'An error occurred while fetching the page.',
       details: err.message,
       status: err.status || 500
     });
+  } finally {
+    // Always clean up resources
+    if (page) {
+      try {
+        await page.close();
+      } catch (e) {
+        console.error('Error closing page:', e);
+      }
+    }
+    if (context) {
+      try {
+        await context.close();
+      } catch (e) {
+        console.error('Error closing context:', e);
+      }
+    }
   }
-
-  const pageError = result.status !== 200 ? getError(result.status) : undefined;
-
-  if (!pageError) {
-    console.log(`✅ Scrape successful!`);
-  } else {
-    console.log(`🚨 Scrape failed with status code: ${result.status} ${pageError}`);
-  }
-
-  await page.close();
-  await context.close();
-
-  return res.json({
-    content: result.content,
-    pageStatusCode: result.status,
-    pageError,
-    headers: result.headers
-  });
 });
 
 // Add cleanup endpoint
