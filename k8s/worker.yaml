@@ -45,13 +45,13 @@ spec:
             name: firecrawl-config
         resources:
           limits:
-            memory: "1024Mi"
-            cpu: "1000m"
-            ephemeral-storage: "2Gi"
+            memory: "4Gi"
+            cpu: "2"
+            ephemeral-storage: "5Gi"
           requests:
-            memory: "512Mi"
-            cpu: "500m"
-            ephemeral-storage: "1Gi"
+            memory: "2Gi"
+            cpu: "1"
+            ephemeral-storage: "2Gi"
         livenessProbe:
           exec:
             command:
@@ -71,6 +71,8 @@ spec:
         - name: gcs-creds
           mountPath: /var/secrets/google
           readOnly: true
+        - name: dshm
+          mountPath: /dev/shm
       tolerations:
       - key: "node.kubernetes.io/disk-pressure"
         operator: "Exists"
@@ -79,5 +81,9 @@ spec:
       - name: gcs-creds
         secret:
           secretName: gcs-credentials
+      - name: dshm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 2Gi
       imagePullSecrets:
       - name: docker-registry-secret 
