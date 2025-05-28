@@ -32,35 +32,37 @@ spec:
         app: redis
     spec:
       containers:
-      - args:
-        - |
-          if [ -n "$REDIS_PASSWORD" ]; then
-            echo "Starting Redis with authentication"
-            exec redis-server --bind 0.0.0.0 --requirepass "$REDIS_PASSWORD"
-          else
-            echo "Starting Redis without authentication"
-            exec redis-server --bind 0.0.0.0
-          fi
-        command:
-        - /bin/sh
-        - -c
+      - name: redis
+        image: gcr.io/firecrawl-deployment-410709/redis-bloom:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 6379
         env:
         - name: REDIS_PASSWORD
           valueFrom:
             secretKeyRef:
               key: REDIS_PASSWORD
               name: firecrawl-secret
-        image: redis:alpine
-        imagePullPolicy: IfNotPresent
-        name: redis
-        resources: {}
-        terminationMessagePath: /dev/termination-log
-        terminationMessagePolicy: File
+        resources:
+          limits:
+            memory: "4Gi"
+            cpu: "1"
+          requests:
+            memory: "2Gi"
+            cpu: "500m"
+        volumeMounts:
+        - name: redis-data
+          mountPath: /data/redis
       dnsPolicy: ClusterFirst
       restartPolicy: Always
       schedulerName: default-scheduler
       securityContext: {}
       terminationGracePeriodSeconds: 30
+      imagePullSecrets:
+      - name: docker-registry-secret
+      volumes:
+      - name: redis-data
+        emptyDir: {}
 status:
   availableReplicas: 1
   conditions:

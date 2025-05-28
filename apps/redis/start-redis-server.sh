@@ -10,7 +10,7 @@ if [[ ! -z "${REDIS_PASSWORD}" ]]; then
   PW_ARG="--requirepass $REDIS_PASSWORD"
 fi
 
-: ${MAXMEMORY_POLICY:="noeviction"}
+: ${MAXMEMORY_POLICY:="allkeys-lru"}
 : ${APPENDONLY:="no"}
 : ${FLY_VM_MEMORY_MB:=$(($(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024))}
 if [ "${NOSAVE}" = "" ] ; then
@@ -19,12 +19,15 @@ fi
 # Set maxmemory to 80% of RAM
 MAXMEMORY=$(($FLY_VM_MEMORY_MB*80/100))
 
-mkdir /data/redis
+mkdir -p /data/redis
 
-redis-server $PW_ARG \
+# Start Redis with Bloom module
+exec redis-server $PW_ARG \
+  --bind 0.0.0.0 \
   --dir /data/redis \
   --maxmemory "${MAXMEMORY}mb" \
   --maxmemory-policy $MAXMEMORY_POLICY \
   --appendonly $APPENDONLY \
   --save "$SAVE" \
-  --protected-mode no
+  --protected-mode no \
+  --loadmodule /opt/redis-stack/lib/redisbloom.so
