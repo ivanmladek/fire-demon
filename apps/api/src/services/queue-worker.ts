@@ -1377,7 +1377,8 @@ async function processJob(job: Job & { id: string }, token: string) {
           url: doc.metadata.url,
           scrape_timestamp: new Date().toISOString(),
           content: doc,
-          links_found: doc.links?.map((link: any) => link.href)
+          links_found: doc.links?.map((link: any) => link.href),
+          jobId: job.id  // Add job ID for cleanup
         };
         backupService.addDataToBuffer(scrapedData);
       }

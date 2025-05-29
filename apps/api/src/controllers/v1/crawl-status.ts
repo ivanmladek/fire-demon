@@ -12,6 +12,7 @@ import {
   getDoneJobsOrdered,
   getDoneJobsOrderedLength,
   isCrawlKickoffFinished,
+  getBackedUpJobs,
 } from "../../lib/crawl-redis";
 import { getScrapeQueue } from "../../services/queue-service";
 import {
@@ -24,6 +25,7 @@ import { logger } from "../../lib/logger";
 import { supabase_rr_service, supabase_service } from "../../services/supabase";
 import { getConcurrencyLimitedJobs } from "../../lib/concurrency-limit";
 import { getJobFromGCS } from "../../lib/gcs-jobs";
+import { Storage } from "@google-cloud/storage";
 configDotenv();
 
 export type PseudoJob<T> = {
@@ -95,13 +97,18 @@ export async function getJobs(ids: string[]): Promise<PseudoJob<any>[]> {
   }
 
   const jobs: PseudoJob<any>[] = [];
+  const missingJobIds: string[] = [];
 
   for (const id of ids) {
     const bullJob = bullJobMap.get(id);
     const dbJob = dbJobMap.get(id);
     const gcsJob = gcsJobMap.get(id);
 
-    if (!bullJob && !dbJob) continue;
+    if (!bullJob && !dbJob && !gcsJob) {
+      // Job not found in any primary source, might be in batch backup
+      missingJobIds.push(id);
+      continue;
+    }
 
     const data = gcsJob ?? dbJob?.docs ?? bullJob?.returnvalue;
     if (gcsJob === null && data) {
@@ -291,4 +298,54 @@ export async function crawlStatusController(
         : nextURL.href,
     data: data,
   });
+}
+
+// Function to get jobs from batch backup files
+async function getJobsFromBatchBackups(crawlId: string, jobIds: string[], domain: string): Promise<Map<string, any>> {
+  const jobResultsMap = new Map<string, any>();
+  
+  if (!process.env.GCP_BUCKET) {
+    return jobResultsMap;
+  }
+  
+  try {
+    const storage = new Storage();
+    const bucket = storage.bucket(process.env.GCP_BUCKET);
+    
+    // List all batch files for this crawl
+    const [files] = await bucket.getFiles({
+      prefix: `${domain}/${crawlId}/`
+    });
+    
+    // Read each batch file and extract results for requested job IDs
+    const jobIdSet = new Set(jobIds);
+    
+    for (const file of files) {
+      if (!file.name.includes('_batch_')) continue;
+      
+      try {
+        const [content] = await file.download();
+        const batchData = JSON.parse(content.toString());
+        
+        if (batchData.scraped_data) {
+          for (const scrapedItem of batchData.scraped_data) {
+            if (scrapedItem.jobId && jobIdSet.has(scrapedItem.jobId)) {
+              jobResultsMap.set(scrapedItem.jobId, scrapedItem.content);
+            }
+          }
+        }
+        
+        // Stop reading files if we've found all requested jobs
+        if (jobResultsMap.size === jobIds.length) {
+          break;
+        }
+      } catch (error) {
+        logger.warn(`Failed to read batch file ${file.name}`, { error });
+      }
+    }
+  } catch (error) {
+    logger.error(`Failed to read batch backup files`, { crawlId, error });
+  }
+  
+  return jobResultsMap;
 }

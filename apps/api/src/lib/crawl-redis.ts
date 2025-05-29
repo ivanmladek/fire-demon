@@ -193,6 +193,25 @@ export async function getCrawlJobCount(id: string): Promise<number> {
   return await redisConnection.scard("crawl:" + id + ":jobs");
 }
 
+export async function markJobsAsBackedUp(crawlId: string, jobIds: string[]) {
+  if (jobIds.length === 0) return;
+  
+  _logger.debug("Marking jobs as backed up", {
+    jobIds,
+    module: "crawl-redis",
+    method: "markJobsAsBackedUp",
+    crawlId,
+  });
+  
+  // Add job IDs to a set tracking backed up jobs
+  await redisConnection.sadd("crawl:" + crawlId + ":backed_up_jobs", ...jobIds);
+  await redisConnection.expire("crawl:" + crawlId + ":backed_up_jobs", 24 * 60 * 60);
+}
+
+export async function getBackedUpJobs(crawlId: string): Promise<string[]> {
+  return await redisConnection.smembers("crawl:" + crawlId + ":backed_up_jobs");
+}
+
 export function normalizeURL(url: string, sc: StoredCrawl): string {
   const urlO = new URL(url);
   if (!sc.crawlerOptions || sc.crawlerOptions.ignoreQueryParameters) {
