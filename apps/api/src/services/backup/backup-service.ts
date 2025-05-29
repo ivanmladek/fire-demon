@@ -14,6 +14,10 @@ const BLOOM_BACKUP_FILE_GCP_PREFIX = 'global_visited_bloom_';
 const GLOBAL_VISITED_KEY = 'global:visited_bloom';
 const BACKUP_INTERVAL_MS = 15 * 60 * 1000;
 
+// Define Bloom filter constants here as well, or import them if they are in a shared location
+const DEFAULT_BLOOM_CAPACITY = 300000000; // Target ~240M, add some buffer
+const DEFAULT_BLOOM_ERROR_RATE = 0.01;
+
 interface BackupMetadata {
   crawl_id: string;
   timestamp: string;
@@ -411,19 +415,24 @@ export class BackupService {
    * Backs up the global Bloom filter to GCP storage
    * @returns Promise<boolean> true if backup was successful, false otherwise
    */
-  async backupBloomFilter(): Promise<boolean> {
+  async backupBloomFilter(
+    bloomFilterKey: string = GLOBAL_VISITED_KEY,
+    // capacity: number = DEFAULT_BLOOM_CAPACITY, // Not directly used by BF.SCANDUMP
+    // errorRate: number = DEFAULT_BLOOM_ERROR_RATE // Not directly used by BF.SCANDUMP
+  ): Promise<boolean> {
     const serviceLogger = logger.child({
       module: 'backup-service',
-      method: 'backupBloomFilter'
+      method: 'backupBloomFilter',
+      bloomFilterKey
     });
     
-    serviceLogger.info(`Starting Bloom filter backup for ${GLOBAL_VISITED_KEY}...`);
+    serviceLogger.info(`Starting Bloom filter backup for ${bloomFilterKey}...`);
     let fileHandle;
     
     try {
       // Create a timestamped filename
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const gcpDestination = `${BLOOM_BACKUP_FILE_GCP_PREFIX}${timestamp}.dump`;
+      const gcpDestination = `${BLOOM_BACKUP_FILE_GCP_PREFIX}${bloomFilterKey}_${timestamp}.dump`;
       
       // Ensure directory exists
       await fs.mkdir(path.dirname(BLOOM_BACKUP_FILE_LOCAL), { recursive: true });
@@ -432,7 +441,7 @@ export class BackupService {
       let iterator = 0;
       while (true) {
         // Use Buffer for command arguments where appropriate
-        const result = await redisConnection.call('BF.SCANDUMP', GLOBAL_VISITED_KEY, iterator);
+        const result = await redisConnection.call('BF.SCANDUMP', bloomFilterKey, iterator);
         // Type assertion for the result to handle the unknown type
         const currentIteratorStr = Array.isArray(result) ? result[0] : '0';
         const chunkData = Array.isArray(result) ? result[1] : null;
@@ -463,7 +472,7 @@ export class BackupService {
       
       return true;
     } catch (error) {
-      serviceLogger.error(`Failed to backup Bloom filter ${GLOBAL_VISITED_KEY}:`, { error: error.message });
+      serviceLogger.error(`Failed to backup Bloom filter ${bloomFilterKey}:`, { error: error.message });
       Sentry.captureException(error);
       if (fileHandle) {
         await fileHandle.close().catch(closeErr => serviceLogger.warn('Error closing file handle during error handling', { closeErr }));
@@ -487,100 +496,101 @@ export class BackupService {
    * Restores the global Bloom filter from GCP storage
    * @returns Promise<boolean> true if restore was successful, false otherwise
    */
-  async restoreBloomFilter(): Promise<boolean> {
+  async restoreBloomFilter(
+    bloomFilterKey: string = GLOBAL_VISITED_KEY,
+    capacity: number = DEFAULT_BLOOM_CAPACITY,
+    errorRate: number = DEFAULT_BLOOM_ERROR_RATE
+  ): Promise<boolean> {
     const serviceLogger = logger.child({
       module: 'backup-service',
-      method: 'restoreBloomFilter'
+      method: 'restoreBloomFilter',
+      bloomFilterKey
     });
     
     try {
-      const exists = await redisConnection.exists(GLOBAL_VISITED_KEY);
-      if (exists) {
-        serviceLogger.info(`Bloom filter ${GLOBAL_VISITED_KEY} already exists in Redis.`);
+      let filterExistsInRedis = (await redisConnection.exists(bloomFilterKey)) === 1;
+      if (filterExistsInRedis) {
+        serviceLogger.info(`Bloom filter ${bloomFilterKey} already exists in Redis.`);
         return true;
       }
 
-      serviceLogger.info(`Attempting to restore Bloom filter ${GLOBAL_VISITED_KEY} from GCP bucket ${GCP_BUCKET}...`);
+      serviceLogger.info(`Attempting to restore Bloom filter ${bloomFilterKey} from GCP bucket ${GCP_BUCKET}...`);
       
-      // Get the list of all Bloom filter backups in GCP
       const [files] = await this.storage.bucket(GCP_BUCKET).getFiles({
-        prefix: BLOOM_BACKUP_FILE_GCP_PREFIX
+        prefix: `${BLOOM_BACKUP_FILE_GCP_PREFIX}${bloomFilterKey}_` // Modified prefix to include key
       });
       
       if (!files || files.length === 0) {
-        serviceLogger.warn(`No Bloom filter backups found in GCP bucket ${GCP_BUCKET}`);
-        // Continue to create a new filter
+        serviceLogger.warn(`No Bloom filter backups found in GCP bucket ${GCP_BUCKET} for key ${bloomFilterKey}. Creating new filter.`);
+        if (!filterExistsInRedis) {
+          await redisConnection.call('BF.RESERVE', bloomFilterKey, errorRate, capacity);
+          serviceLogger.info(`Initialized new empty Bloom filter ${bloomFilterKey} as no backup was found.`);
+        }
+        return true; 
       } else {
-        // Sort files by name to get the latest (assuming timestamp naming pattern)
+        // Modify file sorting if filenames now include the key differently
         const sortedFiles = files.sort((a, b) => b.name.localeCompare(a.name));
         const latestFile = sortedFiles[0];
         
         serviceLogger.info(`Found latest Bloom filter backup: ${latestFile.name}`);
         
-        // Download the latest backup file
-        await fs.mkdir(path.dirname(BLOOM_BACKUP_FILE_LOCAL), { recursive: true });
-        await this.storage.bucket(GCP_BUCKET).file(latestFile.name).download({
-          destination: BLOOM_BACKUP_FILE_LOCAL,
-        });
+        if (!filterExistsInRedis) {
+            serviceLogger.info(`Bloom filter ${bloomFilterKey} does not exist in Redis. Reserving before loading from GCP.`);
+            await redisConnection.call('BF.RESERVE', bloomFilterKey, errorRate, capacity);
+            serviceLogger.info(`Reserved Bloom filter ${bloomFilterKey}.`);
+        }
+
+        // Download the latest dump file from GCP
+        const localFilePath = path.join(BACKUP_DIR, `downloaded_${latestFile.name}`);
+        await fs.mkdir(path.dirname(localFilePath), { recursive: true });
+        await this.storage.bucket(GCP_BUCKET).file(latestFile.name).download({ destination: localFilePath });
         serviceLogger.info(`Downloaded latest Bloom filter dump from GCP: ${latestFile.name}`);
 
-        // Use fs streams to process the file
-        const fileHandle = await fs.open(BLOOM_BACKUP_FILE_LOCAL, 'r');
-        const fileStats = await fileHandle.stat();
-        const buffer = Buffer.alloc(fileStats.size);
-        await fileHandle.read(buffer, 0, buffer.length, 0);
-        await fileHandle.close();
+        // Load the dump file into Redis
+        const dumpContent = await fs.readFile(localFilePath);
+        let iter = 0;
+        const BATCH_CHUNK_SIZE = 1024 * 1024 * 50; // 50MB per chunk
 
-        // Load the data into Redis
-        let iterator = 0;
-        await redisConnection.call('BF.LOADCHUNK', GLOBAL_VISITED_KEY, iterator, buffer);
-        
-        serviceLogger.info(`Successfully restored Bloom filter ${GLOBAL_VISITED_KEY} from GCP dump file.`);
-        
-        // Clean up
-        await fs.unlink(BLOOM_BACKUP_FILE_LOCAL);
+        for (let i = 0; i < dumpContent.length; i += BATCH_CHUNK_SIZE) {
+          const chunk = dumpContent.subarray(i, Math.min(i + BATCH_CHUNK_SIZE, dumpContent.length));
+          // Use redisConnection.call() for BF.LOADCHUNK
+          await redisConnection.call('bf.loadchunk', bloomFilterKey, iter.toString(), chunk);
+          iter++;
+          serviceLogger.info(`Loaded chunk ${iter} for Bloom filter ${bloomFilterKey}.`);
+        }
+        serviceLogger.info(`Successfully loaded all ${iter} chunks for Bloom filter ${bloomFilterKey} from GCP dump ${latestFile.name}.`);
+
+        // Get and log BF.INFO after successful load using redisConnection.call()
+        const filterInfo = await redisConnection.call('bf.info', bloomFilterKey);
+        serviceLogger.info({
+            message: `Bloom filter ${bloomFilterKey} info after restore:`,
+            info: filterInfo,
+        });
+
+        await fs.unlink(localFilePath); // Clean up downloaded file
         return true;
       }
       
-      // If we get here, we need to create a new filter
-      serviceLogger.warn(`No usable Bloom filter found in GCP. Creating a new one.`);
-      const BLOOM_ERROR_RATE = 0.01;
-      const BLOOM_CAPACITY = 300000000;
-      await redisConnection.call('BF.RESERVE', GLOBAL_VISITED_KEY, BLOOM_ERROR_RATE, BLOOM_CAPACITY);
-      serviceLogger.info(`Initialized new empty Bloom filter ${GLOBAL_VISITED_KEY}.`);
-      return true;
-    } catch (error) {
-      if (error.code === 404 || (error instanceof Error && error.message.includes('No such object'))) {
-        serviceLogger.warn(`Bloom filter dump not found in GCP. Initializing new filter ${GLOBAL_VISITED_KEY}.`);
-        // Attempt to create a new filter
-        try {
-          // Check if the filter exists now (race condition handling)
-          const existsAgain = await redisConnection.exists(GLOBAL_VISITED_KEY);
-          if (!existsAgain) {
-            // Use environment variables or defaults for error rate and capacity
-            const BLOOM_ERROR_RATE = 0.01;
-            const BLOOM_CAPACITY = 300000000;
-            await redisConnection.call('BF.RESERVE', GLOBAL_VISITED_KEY, BLOOM_ERROR_RATE, BLOOM_CAPACITY);
-            serviceLogger.info(`Initialized new empty Bloom filter ${GLOBAL_VISITED_KEY}.`);
-            return true;
-          } else {
-            serviceLogger.info(`Bloom filter ${GLOBAL_VISITED_KEY} created concurrently, skipping reserve.`);
-            return true;
-          }
-        } catch (initError) {
-          if (!(initError instanceof Error && initError.message.includes('ERR item exists'))) {
-            serviceLogger.error('Failed to reserve new Bloom filter after restore failed.', { error: initError });
-            return false;
-          } else {
-            serviceLogger.info(`Bloom filter ${GLOBAL_VISITED_KEY} already exists, likely created concurrently.`);
-            return true;
-          }
-        }
-      } else {
-        serviceLogger.error(`Error restoring Bloom filter ${GLOBAL_VISITED_KEY} from GCP:`, { error: error.message });
-        Sentry.captureException(error);
-        return false;
+      filterExistsInRedis = (await redisConnection.exists(bloomFilterKey)) === 1; // Re-check before final reserve
+      if (!filterExistsInRedis) { 
+        serviceLogger.warn(`No usable Bloom filter found or loaded from GCP for key ${bloomFilterKey}. Creating a new one.`);
+        await redisConnection.call('BF.RESERVE', bloomFilterKey, errorRate, capacity);
+        serviceLogger.info(`Initialized new empty Bloom filter ${bloomFilterKey}.`);
       }
+      return true;
+    } catch (error: any) {
+      serviceLogger.error({
+        message: `Error restoring Bloom filter ${bloomFilterKey} from GCP: ${error.message}`,
+        error: error.stack,
+      });
+      // If loading failed, it's crucial to indicate that the filter in Redis might be just reserved (empty)
+      // or partially loaded and potentially corrupt. The lock mechanism should prevent other workers
+      // from using it until the lock holder (this worker) either succeeds or releases the lock after failure.
+      return false;
     }
+  }
+
+  async startBackupRoutine() {
+    // ... existing code ...
   }
 } 
