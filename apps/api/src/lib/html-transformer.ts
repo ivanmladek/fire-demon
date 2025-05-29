@@ -4,11 +4,24 @@ import { stat } from "fs/promises";
 import { platform } from "os";
 
 // TODO: add a timeout to the Rust transformer
+const currentPlatform = platform();
+
+// Path to the Rust html-transformer shared library
+const absoluteRustLibDir = join("/app", "sharedLibs/html-transformer/target/release/");
 const rustExecutablePath = join(
-  process.cwd(),
-  "sharedLibs/html-transformer/target/release/",
-  platform() === "darwin" ? "libhtml_transformer.dylib" : "libhtml_transformer.so"
+  absoluteRustLibDir,
+  currentPlatform === "darwin" ? "libhtml_transformer.dylib" : "libhtml_transformer.so"
 );
+
+// Path to the Go html-to-markdown shared library
+const absoluteGoLibDir = join("/app", "sharedLibs/go-html-to-md/");
+const goExecutablePath = join(
+  absoluteGoLibDir,
+  currentPlatform === "darwin" ? "html-to-markdown.dylib" : "html-to-markdown.so"
+);
+
+// Koffi instances for the libraries
+// ... existing code ...
 
 type TransformHtmlOptions = {
   html: string,

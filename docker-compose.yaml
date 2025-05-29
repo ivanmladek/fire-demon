@@ -47,7 +47,7 @@ x-common-env: &common-env
   SEARCHAPI_API_KEY: ${SEARCHAPI_API_KEY}
   LOGGING_LEVEL: ${LOGGING_LEVEL}
   PROXY_SERVER: gate.nodemaven.com:8080
-  PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-any-type-mobile-ipv4-true-sid-591435f3c9ed4-filter-medium
+  PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-us-type-mobile-filter-medium
   PROXY_PASSWORD: ktonj4oufu
   SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
@@ -63,37 +63,37 @@ services:
     environment:
       PORT: 3000
       PROXY_SERVER: gate.nodemaven.com:8080
-      PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-any-type-mobile-ipv4-true-sid-591435f3c9ed4-filter-medium
+      PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-us-type-mobile-filter-medium
       PROXY_PASSWORD: ktonj4oufu
       BLOCK_MEDIA: true
       # Browser optimization settings
       BROWSER_CONTEXT_OPTIONS: '{"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36","viewport":{"width":1920,"height":1080},"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"javaScriptEnabled":true}'
-      MAX_CONCURRENT_PAGES: 5
+      MAX_CONCURRENT_PAGES: 1
       PAGE_TIMEOUT: 30000
       RETRY_COUNT: 1
       RETRY_DELAY: 10000
       PROXY_TIMEOUT: 60000
       PROXY_RETRY_COUNT: 5
-      PROXY_RETRY_DELAY: 15000
+      PROXY_RETRY_DELAY: 45000
       # Proxy rotation settings
       PROXY_ROTATION_ENABLED: true
       PROXY_ROTATION_INTERVAL: 1
-      PROXY_ROTATION_429_WAIT: 30000
+      PROXY_ROTATION_429_WAIT: 120000
       PROXY_MAX_REQUESTS: 100
       # Rate limiting
       RATE_LIMIT_ENABLED: true
-      RATE_LIMIT_REQUESTS: 10
+      RATE_LIMIT_REQUESTS: 2
       RATE_LIMIT_WINDOW: 60000
     networks:
       - backend
     deploy:
       resources:
         limits:
-          memory: 30G
-          cpus: '16'
-        reservations:
-          memory: 5G
+          memory: 15G
           cpus: '8'
+        reservations:
+          memory: 10G
+          cpus: '5'
 
   api:
     <<: *common-service
@@ -106,7 +106,7 @@ services:
       - redis
       - playwright-service
     ports:
-      - "${PORT:-3002}:${INTERNAL_PORT:-3002}"
+      - "${INTERNAL_PORT:-3002}"
     command: [ "pnpm", "run", "start:production" ]
     deploy:
       resources:
@@ -122,13 +122,12 @@ services:
     build:
       context: apps/api
       dockerfile: Dockerfile
-      target: base
     environment:
       <<: *common-env
       FLY_PROCESS_GROUP: worker
       MAX_RAM: 0.92
       # Queue configuration
-      BULL_CONCURRENCY: 50
+      BULL_CONCURRENCY: 3
       BULL_LIMITER_MAX: 3000
       BULL_LIMITER_DURATION: 60000
       BULL_LOCK_DURATION: 600000
@@ -145,8 +144,6 @@ services:
       - api
     command: >
       bash -c "
-      apt-get update && 
-      apt-get install -y curl python3 python3-pip apt-transport-https ca-certificates gnupg git &&
       mkdir -p /var/secrets/google /app/data/crawl_backups &&
       cd /app &&
       npm install @google-cloud/storage &&
@@ -161,6 +158,10 @@ services:
       resources:
         limits:
           memory: 10G
+          cpus: '4'
+        reservations:
+          memory: 5G
+          cpus: '2'
 
   redis:
     # NOTE: If you want to use Valkey (open source) instead of Redis (source available),
