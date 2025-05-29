@@ -3,10 +3,10 @@ import { logger } from '../../lib/logger';
 import { Storage } from '@google-cloud/storage';
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { getDoneJobsOrderedLength } from '../../lib/crawl-redis';
+import { getDoneJobsOrderedLength, markJobsAsBackedUp } from '../../lib/crawl-redis';
 import * as Sentry from "@sentry/node";
 
-const BATCH_SIZE = 2000;
+const BATCH_SIZE = 1000;
 const BACKUP_DIR = '/app/data/crawl_backups';
 const GCP_BUCKET = process.env.GCP_BUCKET || 'firecrawl-backups';
 const BLOOM_BACKUP_FILE_LOCAL = '/app/data/crawl_backups/global_visited_bloom_latest.dump';
@@ -42,6 +42,14 @@ export class BackupService {
   private lastBackupTime: number = 0;
   private dataBuffer: ScrapedData[] = [];
   private backupInProgress: boolean = false;
+  private jobIdBuffer: string[] = []; // Track job IDs for cleanup
+  
+  // Add tracking for speed estimation
+  private batchStartTime: number = 0;
+  private totalJobsProcessed: number = 0;
+  private lastLogTime: number = 0;
+  private lastLogCount: number = 0;
+  private LOG_INTERVAL_MS = 10000; // Log every 10 seconds
 
   constructor() {
     this.storage = new Storage();
@@ -55,6 +63,12 @@ export class BackupService {
     this.dataBuffer = [];
     this.backupInProgress = false;
     
+    // Reset tracking variables
+    this.batchStartTime = Date.now();
+    this.totalJobsProcessed = 0;
+    this.lastLogTime = Date.now();
+    this.lastLogCount = 0;
+    
     // Create backup directory if it doesn't exist
     await fs.mkdir(path.join(BACKUP_DIR, domain), { recursive: true }).catch(err => {
       logger.error(`Failed to create backup directory for domain ${domain}`, { error: err });
@@ -62,11 +76,52 @@ export class BackupService {
     });
   }
 
-  public addDataToBuffer(data: ScrapedData) {
+  public addDataToBuffer(data: ScrapedData & { jobId?: string }) {
     if (!this.currentCrawlId) return;
 
     if (data && data.url && data.content) {
       this.dataBuffer.push(data);
+      if (data.jobId) {
+        this.jobIdBuffer.push(data.jobId);
+      }
+      
+      this.totalJobsProcessed++;
+      const currentBatchSize = this.dataBuffer.length;
+      const now = Date.now();
+      
+      // Log progress at regular intervals or at specific milestones
+      const shouldLogMilestone = currentBatchSize % 100 === 0; // Every 100 items
+      const shouldLogInterval = (now - this.lastLogTime) >= this.LOG_INTERVAL_MS;
+      
+      if (shouldLogMilestone || shouldLogInterval) {
+        // Calculate speeds
+        const overallDuration = (now - this.batchStartTime) / 1000; // seconds
+        const overallSpeed = this.totalJobsProcessed / overallDuration;
+        
+        const intervalDuration = (now - this.lastLogTime) / 1000; // seconds
+        const intervalJobs = currentBatchSize - this.lastLogCount;
+        const intervalSpeed = intervalJobs / intervalDuration;
+        
+        // Estimate time to complete batch
+        const remainingInBatch = BATCH_SIZE - currentBatchSize;
+        const etaSeconds = remainingInBatch / intervalSpeed;
+        const etaMinutes = Math.ceil(etaSeconds / 60);
+        
+        logger.info(`📊 Batch Progress: ${currentBatchSize}/${BATCH_SIZE} (${(currentBatchSize/BATCH_SIZE*100).toFixed(1)}%)`, {
+          crawlId: this.currentCrawlId,
+          domain: this.currentDomain,
+          batchNumber: this.backupCount + 1,
+          currentBatchSize,
+          totalJobsProcessed: this.totalJobsProcessed,
+          overallSpeed: overallSpeed.toFixed(2) + " jobs/sec",
+          intervalSpeed: intervalSpeed.toFixed(2) + " jobs/sec (last " + intervalDuration.toFixed(0) + "s)",
+          estimatedTimeToBackup: etaMinutes + " minutes",
+          memoryUsage: `${(process.memoryUsage().heapUsed / 1024 / 1024).toFixed(0)} MB`
+        });
+        
+        this.lastLogTime = now;
+        this.lastLogCount = currentBatchSize;
+      }
     } else {
       logger.warn("Attempted to add invalid data to backup buffer", { crawlId: this.currentCrawlId, data });
     }
@@ -97,10 +152,24 @@ export class BackupService {
       this.backupInProgress = true;
       try {
         const bufferToBackup = [...this.dataBuffer]; 
+        const jobIdsToCleanup = [...this.jobIdBuffer];
         await this.createBackup(bufferToBackup);
+        
+        // Clean up individual job results after successful backup
+        if (jobIdsToCleanup.length > 0) {
+          await this.cleanupIndividualJobResults(jobIdsToCleanup);
+        }
+        
         this.dataBuffer = []; 
+        this.jobIdBuffer = [];
         this.lastBackupTime = Date.now();
-        serviceLogger.info(`Successfully backed up ${bufferToBackup.length} items. Total backups: ${this.backupCount}`);
+        
+        // Reset batch timing for next batch
+        this.batchStartTime = Date.now();
+        this.lastLogTime = Date.now();
+        this.lastLogCount = 0;
+        
+        serviceLogger.info(`Successfully backed up ${bufferToBackup.length} items and cleaned up ${jobIdsToCleanup.length} individual job results. Total backups: ${this.backupCount}`);
       } catch (error) {
         serviceLogger.error(`Backup attempt failed. Buffer not cleared.`, { error });
       } finally {
@@ -116,6 +185,10 @@ export class BackupService {
     if (!this.currentCrawlId || !this.currentDomain) return;
 
     const currentBatchNumber = this.backupCount + 1;
+    
+    // Calculate final batch statistics
+    const batchDuration = (Date.now() - this.batchStartTime) / 1000; // seconds
+    const avgSpeed = bufferToBackup.length / batchDuration;
 
     const serviceLogger = logger.child({
       module: 'backup-service',
@@ -125,8 +198,11 @@ export class BackupService {
       batchSize: bufferToBackup.length
     });
 
-    serviceLogger.info(`Starting backup for batch ${currentBatchNumber}. Total jobs completed: 
-${bufferToBackup.length}`);
+    serviceLogger.info(`🎯 Starting backup for batch ${currentBatchNumber}. Total jobs completed: ${bufferToBackup.length}`, {
+      batchDuration: batchDuration.toFixed(1) + " seconds",
+      averageSpeed: avgSpeed.toFixed(2) + " jobs/sec",
+      totalJobsProcessed: this.totalJobsProcessed
+    });
 
     if (bufferToBackup.length === 0) {
       serviceLogger.warn(`Buffer is empty. Skipping backup for batch ${currentBatchNumber}.`);
@@ -208,6 +284,61 @@ ${bufferToBackup.length}`);
          } 
       });
       throw error;
+    }
+  }
+
+  private async cleanupIndividualJobResults(jobIds: string[]) {
+    const serviceLogger = logger.child({ 
+      module: 'backup-service', 
+      method: 'cleanupIndividualJobResults', 
+      crawlId: this.currentCrawlId,
+      jobCount: jobIds.length
+    });
+
+    try {
+      serviceLogger.info(`Starting cleanup of ${jobIds.length} individual job results`);
+      
+      // Clean up from Redis - remove job return values to free memory
+      const pipeline = redisConnection.pipeline();
+      for (const jobId of jobIds) {
+        // Remove the job's return value from BullMQ
+        const jobKey = `bull:scrapeQueue:${jobId}`;
+        pipeline.hdel(jobKey, 'returnvalue');
+      }
+      await pipeline.exec();
+      serviceLogger.info(`Cleared return values from Redis for ${jobIds.length} jobs`);
+      
+      // Clean up from GCS - delete individual job JSON files
+      if (process.env.GCS_BUCKET_NAME) {
+        const deletePromises = jobIds.map(async (jobId) => {
+          try {
+            await this.storage.bucket(process.env.GCS_BUCKET_NAME!).file(`${jobId}.json`).delete();
+          } catch (error) {
+            // Log but don't throw - file might not exist
+            if (error.code !== 404) {
+              serviceLogger.warn(`Failed to delete GCS file ${jobId}.json`, { error: error.message });
+            }
+          }
+        });
+        
+        // Batch delete operations for efficiency
+        const batchSize = 100;
+        for (let i = 0; i < deletePromises.length; i += batchSize) {
+          await Promise.all(deletePromises.slice(i, i + batchSize));
+        }
+        
+        serviceLogger.info(`Cleaned up individual job files from GCS`);
+      }
+      
+      // Mark jobs as backed up in Redis so crawl status knows to look in batch files
+      if (this.currentCrawlId) {
+        await markJobsAsBackedUp(this.currentCrawlId, jobIds);
+        serviceLogger.info(`Marked ${jobIds.length} jobs as backed up`);
+      }
+      
+    } catch (error) {
+      serviceLogger.error(`Failed to clean up individual job results`, { error });
+      // Don't throw - we don't want cleanup failures to prevent future backups
     }
   }
 
