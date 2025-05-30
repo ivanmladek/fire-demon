@@ -107,7 +107,10 @@ services:
       - playwright-service
     ports:
       - "${INTERNAL_PORT:-3002}"
-    command: [ "pnpm", "run", "start:production" ]
+    command: [ "tail", "-f", "/dev/null" ]
+    volumes:
+      - /Users/jj/code/gdrive-410709-7f394f22402f.json:/var/secrets/google/credentials.json:ro
+      - ./data/redis:/data/redis
     deploy:
       resources:
         limits:
@@ -168,11 +171,11 @@ services:
     # uncomment the Valkey statement and comment out the Redis statement.
     # Using Valkey with Firecrawl is untested and not guaranteed to work. Use with caution.
     # image: redis:alpine
-    image: redis/redis-stack:latest
+    image: redis/redis-stack-server:6.2.6-v7
     # image: valkey/valkey:alpine
     networks:
       - backend
-    command: redis-server --bind 0.0.0.0 --maxmemory 20gb --maxmemory-policy allkeys-lru --loadmodule /opt/redis-stack/lib/redisbloom.so --protected-mode no
+    command: redis-server --dir /data --dbfilename dump.rdb --bind 0.0.0.0 --maxmemory 20gb --maxmemory-policy noeviction --loadmodule /opt/redis-stack/lib/redisbloom.so --protected-mode no
     volumes:
       - ./data/redis:/data
     deploy:

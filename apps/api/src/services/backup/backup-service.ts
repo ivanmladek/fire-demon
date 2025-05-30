@@ -7,6 +7,8 @@ import { getDoneJobsOrderedLength, markJobsAsBackedUp } from '../../lib/crawl-re
 import * as Sentry from "@sentry/node";
 import { exec } from 'child_process';
 import { promisify } from 'util';
+import * as fsSync from 'fs';
+import { setTimeout as sleep } from 'timers/promises';
 const execAsync = promisify(exec);
 
 const BATCH_SIZE = 1000;
@@ -23,7 +25,7 @@ const DEFAULT_CUCKOO_BUCKET_SIZE = 2;
 const DEFAULT_CUCKOO_MAX_ITERATIONS = 500;
 const DEFAULT_CUCKOO_EXPANSION = 1;
 
-const REDIS_DUMP_PATH = './data/redis/dump.rdb'; // Path inside the container
+const REDIS_DUMP_PATH = '/data/redis/dump.rdb'; // Path inside the api container after volume mount
 const REDIS_CONTAINER_NAME = 'redis'; // As per docker-compose.yaml
 
 interface BackupMetadata {
@@ -437,9 +439,44 @@ export class BackupService {
   // --- NEW: Full Redis snapshot backup to GCS ---
   async backupRedisSnapshotToGCS(): Promise<void> {
     logger.info('[Redis Snapshot] Triggering BGSAVE...');
-    await redisConnection.call('BGSAVE');
-    // Wait for dump.rdb to be updated (simple sleep, can be improved)
-    await new Promise(res => setTimeout(res, 2000));
+    let bgsaveStarted = false;
+    try {
+      await redisConnection.call('BGSAVE');
+      bgsaveStarted = true;
+    } catch (err: any) {
+      if (err.message && err.message.includes('Background save already in progress')) {
+        logger.warn('[Redis Snapshot] BGSAVE already in progress, will wait for RDB file...');
+      } else {
+        logger.error('[Redis Snapshot] BGSAVE failed:', err);
+        throw err;
+      }
+    }
+
+    // Wait for dump.rdb to be written/updated (poll for up to 15s)
+    const maxWaitMs = 15000;
+    const pollIntervalMs = 250;
+    const start = Date.now();
+    let found = false;
+    let lastMtime = 0;
+    logger.info(`[Redis Snapshot] Polling for RDB file at ${REDIS_DUMP_PATH} for up to ${maxWaitMs}ms...`);
+    while (Date.now() - start < maxWaitMs) {
+      try {
+        const stat = await fs.stat(REDIS_DUMP_PATH);
+        logger.info(`[Redis Snapshot] Found RDB file. mtime: ${stat.mtime.toISOString()}`);
+        // If file is new or recently modified, proceed
+        if (stat.mtimeMs > lastMtime) {
+          found = true;
+          break;
+        }
+      } catch (e) {
+        logger.info(`[Redis Snapshot] RDB file not found yet at ${REDIS_DUMP_PATH}. Retrying...`);
+      }
+      await sleep(pollIntervalMs);
+    }
+    if (!found) {
+      logger.error(`[Redis Snapshot] RDB file not found or not updated at ${REDIS_DUMP_PATH} after BGSAVE and ${maxWaitMs}ms.`);
+      throw new Error(`RDB file not found or not updated at ${REDIS_DUMP_PATH} after BGSAVE`);
+    }
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const gcsFilename = `redis-dump/dump_${timestamp}.rdb`;
     await this.storage.bucket(GCP_BUCKET).upload(REDIS_DUMP_PATH, { destination: gcsFilename });
@@ -455,9 +492,7 @@ export class BackupService {
     const latest = files[0];
     await latest.download({ destination: REDIS_DUMP_PATH });
     logger.info(`[Redis Restore] Downloaded latest Redis dump from GCS: ${latest.name}`);
-    // Restart Redis container to load new dump
-    await execAsync(`docker compose restart ${REDIS_CONTAINER_NAME}`);
-    logger.info('[Redis Restore] Redis container restarted to load new dump');
+    logger.warn('[Redis Restore] Please restart the Redis container externally to load the new dump.');
   }
 
   async startBackupRoutine() {

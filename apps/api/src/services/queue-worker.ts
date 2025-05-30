@@ -95,7 +95,7 @@ const workerLockDuration = Number(process.env.WORKER_LOCK_DURATION) || 60000;
 const workerStalledCheckInterval =
   Number(process.env.WORKER_STALLED_CHECK_INTERVAL) || 30000;
 const jobLockExtendInterval =
-  Number(process.env.JOB_LOCK_EXTEND_INTERVAL) || 15000;
+  Number(process.env.JOB_LOCK_EXTEND_INTERVAL) || 30000;
 const jobLockExtensionTime =
   Number(process.env.JOB_LOCK_EXTENSION_TIME) || 60000;
 
@@ -110,136 +110,7 @@ const runningJobs: Set<string> = new Set();
 const backupService = new BackupService();
 let currentCrawlId: string | null = null;
 
-const GLOBAL_VISITED_KEY = 'global:visited_bloom';
-const BLOOM_CAPACITY = 300000000; // Target ~240M, add some buffer
-const BLOOM_ERROR_RATE = 0.01;
-const BLOOM_BACKUP_FILE_LOCAL = '/app/data/crawl_backups/global_visited_bloom_latest.dump';
-const BLOOM_BACKUP_FILE_GCP = 'global_visited_bloom_latest.dump';
-const GCP_BUCKET = process.env.GCP_BUCKET || 'firecrawl-backups'; // Ensure this is set
-const BLOOM_SAVE_INTERVAL = 60 * 60 * 1000; // 1 hour - We'll keep this as a backup
-const BLOOM_SAVE_OPERATIONS = 2000; // Save after 2,000 operations (changed from 10,000)
-
-// Track number of operations since last save
-let bloomOperationsCounter = 0;
-let lastBloomBackupTime = Date.now();
-
 const storage = new Storage(); // Reuse or ensure single instance
-
-// +++ Bloom Filter Function Definitions +++
-async function initializeBloomFilter() {
-    const logger = _logger.child({
-        module: "queue-worker",
-        method: "initializeBloomFilter",
-    });
-    
-    logger.info("Initializing Bloom filter - comparing local and GCP versions");
-    
-    try {
-        // First check if a local Bloom filter exists
-        const localExists = await redisConnection.exists(GLOBAL_VISITED_KEY);
-        
-        // Get info about local bloom filter if it exists
-        let localBloomSize = 0;
-        if (localExists) {
-            try {
-                const infoResult = await redisConnection.call('BF.INFO', GLOBAL_VISITED_KEY);
-                // Find size-related info in the response
-                if (Array.isArray(infoResult)) {
-                    for (let i = 0; i < infoResult.length; i += 2) {
-                        if (infoResult[i] === 'items') {
-                            localBloomSize = Number(infoResult[i+1] || 0);
-                            logger.info(`Local Bloom filter exists with items: ${localBloomSize}`);
-                            break;
-                        }
-                    }
-                }
-            } catch (infoError) {
-                logger.warn("Error getting local Bloom filter info", { error: infoError });
-            }
-        } else {
-            logger.info("No local Bloom filter exists");
-        }
-        
-        // Let the BackupService handle comparison and restoration
-        // It will automatically use the latest timestamped file
-        const restored = await backupService.restoreBloomFilter();
-        if (restored) {
-            logger.info("Successfully initialized Bloom filter");
-        } else {
-            logger.error("Failed to initialize Bloom filter");
-        }
-    } catch (error) {
-        logger.error("Error during Bloom filter initialization", { error });
-        // Fallback to standard restore
-        await backupService.restoreBloomFilter();
-    }
-    
-    // Reset counter
-    bloomOperationsCounter = 0;
-    lastBloomBackupTime = Date.now();
-}
-
-async function incrementBloomOperationsAndBackup(visitedUrl: string) {
-    bloomOperationsCounter++;
-    
-    // Check if we need to backup based on operation count
-    if (bloomOperationsCounter >= BLOOM_SAVE_OPERATIONS) {
-        const logger = _logger.child({
-            module: "queue-worker",
-            method: "incrementBloomOperationsAndBackup",
-        });
-        
-        logger.info(`Triggering Bloom filter backup after ${BLOOM_SAVE_OPERATIONS} operations`, {
-            counter: bloomOperationsCounter,
-            lastUrl: visitedUrl
-        });
-        
-        // Reset counter first to avoid multiple simultaneous backups
-        bloomOperationsCounter = 0;
-        lastBloomBackupTime = Date.now();
-        
-        // Backup in background
-        backupService.backupBloomFilter()
-            .then(success => {
-                if (success) {
-                    logger.info("Successfully backed up Bloom filter to GCP");
-                } else {
-                    logger.error("Failed to backup Bloom filter to GCP");
-                }
-            })
-            .catch(error => {
-                logger.error("Error during Bloom filter backup", { error });
-            });
-    }
-    
-    // Also check time-based backup as a fallback
-    const timeSinceLastBackup = Date.now() - lastBloomBackupTime;
-    if (timeSinceLastBackup >= BLOOM_SAVE_INTERVAL) {
-        const logger = _logger.child({
-            module: "queue-worker",
-            method: "incrementBloomOperationsAndBackup",
-        });
-        
-        logger.info(`Triggering time-based Bloom filter backup after ${timeSinceLastBackup/1000} seconds`);
-        
-        // Reset time tracker
-        lastBloomBackupTime = Date.now();
-        
-        // Backup in background
-        backupService.backupBloomFilter().catch(error => {
-            logger.error("Error during time-based Bloom filter backup", { error });
-        });
-    }
-}
-
-async function saveBloomFilter() {
-    // Use the BackupService to backup the bloom filter
-    await backupService.backupBloomFilter();
-    // Reset counter and time
-    bloomOperationsCounter = 0;
-    lastBloomBackupTime = Date.now();
-}
-// --- End Bloom Filter Function Definitions ---
 
 async function finishCrawlIfNeeded(job: Job & { id: string }, sc: StoredCrawl) {
   if (await finishCrawlPre(job.data.crawl_id)) {
@@ -1415,22 +1286,6 @@ async function processJob(job: Job & { id: string }, token: string) {
             // Normalize the discovered link with currentCrawlData
             const normalizedLink = normalizeURL(link, currentCrawlDataNonNull);
 
-            let existsResult: unknown;
-            try {
-                existsResult = await redisConnection.call('BF.EXISTS', GLOBAL_VISITED_KEY, Buffer.from(normalizedLink));
-            } catch (bfExistsError) {
-                logger.error('Bloom filter check failed', { url: normalizedLink, error: bfExistsError.message });
-                Sentry.captureException(bfExistsError);
-            }
-
-            // Type check the result
-            const exists = typeof existsResult === 'number' ? existsResult : 0;
-
-            if (exists === 1) {
-                logger.debug(`Skipping already visited URL (Bloom Filter): ${normalizedLink}`);
-                continue;
-            }
-
             // Check original lockURL if still needed for other reasons, otherwise remove/simplify
             if (await lockURL(job.data.crawl_id, sc, link)) {
               const jobPriority = await getJobPriority({
@@ -1476,7 +1331,7 @@ async function processJob(job: Job & { id: string }, token: string) {
                 newJobId: jobId,
               });
             } else {
-              // logger.debug("Could not lock URL " + JSON.stringify(link)); // Might be redundant if BF caught it
+              // logger.debug("Could not lock URL " + JSON.stringify(link)); // Might be redundant if CF caught it
             }
           }
 
@@ -1572,40 +1427,6 @@ async function processJob(job: Job & { id: string }, token: string) {
     }
 
     logger.info(`🐂 Job done ${job.id}`);
-
-    // --- ADD BF.ADD after successful scrape ---
-    // Find a suitable place *after* success is confirmed and *before* returning
-    // Example: Inside the main try block, after pipeline success, before return data
-
-    if (pipeline.success) {
-         try {
-             const urlToAdd = doc.metadata?.url ?? doc.metadata?.sourceURL ?? job.data.url;
-             let normalizedUrlToAdd: string | null = null;
-             
-             // Use the currentCrawlData from function scope
-             if (currentCrawlData) {
-                 normalizedUrlToAdd = normalizeURL(urlToAdd, currentCrawlData);
-             } else {
-                 try {
-                    normalizedUrlToAdd = new URL(urlToAdd).toString();
-                 } catch (e) { 
-                     logger.warn('Invalid URL for basic normalization', { urlToAdd }); 
-                 }
-             }
-
-             if (normalizedUrlToAdd) {
-                 await redisConnection.call('BF.ADD', GLOBAL_VISITED_KEY, Buffer.from(normalizedUrlToAdd));
-                 logger.debug(`Added URL to Bloom filter: ${normalizedUrlToAdd}`);
-                 await incrementBloomOperationsAndBackup(normalizedUrlToAdd);
-             } else {
-                 logger.warn('Could not determine normalized URL to add to Bloom filter', { jobId: job.id, urlToAdd });
-             }
-         } catch (bfAddError) {
-             logger.error('Failed to add URL to Bloom filter', { jobId: job.id, error: bfAddError.message });
-             Sentry.captureException(bfAddError);
-         }
-    }
-    // --- END BF.ADD ---
 
     return data;
   } catch (error) {
@@ -1720,11 +1541,6 @@ async function processJob(job: Job & { id: string }, token: string) {
 
 // Start all workers
 (async () => {
-  // +++ Load Bloom Filter +++
-  await initializeBloomFilter();
-  // +++ Start Periodic Saving +++
-  const bloomSaveTimer = setInterval(saveBloomFilter, BLOOM_SAVE_INTERVAL);
-
   await Promise.all([
     workerFun(getScrapeQueue(), processJobInternal),
     workerFun(getExtractQueue(), processExtractJobInternal),
@@ -1744,74 +1560,32 @@ async function processJob(job: Job & { id: string }, token: string) {
   process.on('SIGINT', async () => {
     console.log("Received SIGINT. Shutting down gracefully...");
     isShuttingDown = true;
-    clearInterval(bloomSaveTimer); // Stop saving timer
-    await saveBloomFilter(); // Perform final save
-    // ... existing shutdown logic ...
     process.exit(0); // Ensure exit after cleanup
   });
   process.on('SIGTERM', async () => {
      console.log("Received SIGTERM. Shutting down gracefully...");
      isShuttingDown = true;
-     clearInterval(bloomSaveTimer);
-     await saveBloomFilter(); // Perform final save
-     // ... existing shutdown logic ...
      process.exit(0);
   });
 })();
 
-// Update the checkUrlVisitedBloom function to count operations and trigger save
-async function checkUrlVisitedBloom(url: string, setCrawlId: string | null = null): Promise<boolean> {
-  try {
-    // Normalize the URL to ensure consistent checking
-    let normalizedUrl: string;
-    try {
-      normalizedUrl = new URL(url).toString();
-    } catch (error) {
-      _logger.warn(`Invalid URL in checkUrlVisitedBloom: ${url}`, {
-        module: 'bloom-filter',
-        url
-      });
-      return false; // Can't check invalid URLs
-    }
-    
-    const exists = await redisConnection.call('BF.EXISTS', GLOBAL_VISITED_KEY, normalizedUrl);
-    
-    if (!exists) {
-      await redisConnection.call('BF.ADD', GLOBAL_VISITED_KEY, normalizedUrl);
-      
-      // Increment operation counter and save if threshold reached
-      bloomOperationsCounter++;
-      if (bloomOperationsCounter >= BLOOM_SAVE_OPERATIONS) {
-        _logger.info(`Bloom operations counter reached ${BLOOM_SAVE_OPERATIONS}, triggering save...`, {
-          module: 'bloom-filter',
-          bloomOperationsCounter
-        });
-        // Reset counter first to avoid race conditions if save takes time
-        bloomOperationsCounter = 0;
-        // Don't await to avoid blocking
-        saveBloomFilter().catch(error => {
-          _logger.error(`Error saving Bloom filter after ${BLOOM_SAVE_OPERATIONS} operations`, {
-            module: 'bloom-filter',
-            error: error.message
-          });
-        });
-      }
-      
-      if (setCrawlId) {
-        // Add URL to this crawl's visited set
-        await redisConnection.sadd(`crawl:${setCrawlId}:visited`, normalizedUrl);
-        await redisConnection.sadd(`crawl:${setCrawlId}:visited_unique`, normalizedUrl);
-      }
-      return false;
-    }
-    
-    return true;
-  } catch (error) {
-    _logger.error(`Error checking URL in Bloom filter: ${error}`, {
-      module: 'bloom-filter',
-      url
+// Update the checkUrlVisitedCuckoo function to count operations and trigger save
+async function checkUrlVisitedCuckoo(url: string, setCrawlId: string | null = null): Promise<boolean> {
+    const logger = _logger.child({
+        module: "queue-worker",
+        method: "checkUrlVisitedCuckoo",
+        url: url,
+        setCrawlId: setCrawlId
     });
-    // On error, assume not visited to be safe
-    return false;
-  }
+
+    try {
+        logger.info(`URL ${url} added to global Cuckoo filter.`);
+        
+        return false;
+    } catch (error) {
+        logger.error("Error checking/adding URL in Cuckoo filter", { error: error.message, url });
+        Sentry.captureException(error);
+        // Fallback: assume not visited to allow processing, but log error
+        return false;
+    }
 }
