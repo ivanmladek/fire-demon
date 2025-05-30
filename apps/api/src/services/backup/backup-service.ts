@@ -5,18 +5,26 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getDoneJobsOrderedLength, markJobsAsBackedUp } from '../../lib/crawl-redis';
 import * as Sentry from "@sentry/node";
+import { exec } from 'child_process';
+import { promisify } from 'util';
+const execAsync = promisify(exec);
 
 const BATCH_SIZE = 1000;
 const BACKUP_DIR = '/app/data/crawl_backups';
 const GCP_BUCKET = process.env.GCP_BUCKET || 'firecrawl-backups';
-const BLOOM_BACKUP_FILE_LOCAL = '/app/data/crawl_backups/global_visited_bloom_latest.dump';
-const BLOOM_BACKUP_FILE_GCP_PREFIX = 'global_visited_bloom_';
-const GLOBAL_VISITED_KEY = 'global:visited_bloom';
+const CUCKOO_BACKUP_FILE_LOCAL = '/app/data/crawl_backups/global_visited_cuckoo_latest.dump';
+const CUCKOO_BACKUP_FILE_GCP_PREFIX = 'global_visited_cuckoo_';
+const GLOBAL_VISITED_KEY = 'global:visited_cuckoo';
 const BACKUP_INTERVAL_MS = 15 * 60 * 1000;
 
-// Define Bloom filter constants here as well, or import them if they are in a shared location
-const DEFAULT_BLOOM_CAPACITY = 300000000; // Target ~240M, add some buffer
-const DEFAULT_BLOOM_ERROR_RATE = 0.01;
+// Define Cuckoo filter constants here as well, or import them if they are in a shared location
+const DEFAULT_CUCKOO_CAPACITY = 300000000; // Target ~240M, add some buffer
+const DEFAULT_CUCKOO_BUCKET_SIZE = 2;
+const DEFAULT_CUCKOO_MAX_ITERATIONS = 500;
+const DEFAULT_CUCKOO_EXPANSION = 1;
+
+const REDIS_DUMP_PATH = './data/redis/dump.rdb'; // Path inside the container
+const REDIS_CONTAINER_NAME = 'redis'; // As per docker-compose.yaml
 
 interface BackupMetadata {
   crawl_id: string;
@@ -36,6 +44,23 @@ interface ScrapedData {
 interface BackupFile {
   metadata: BackupMetadata;
   scraped_data: ScrapedData[];
+}
+
+interface CuckooFilterChunk {
+  iterator: number;
+  data: string; // base64 encoded
+}
+
+interface CuckooFilterBackupData {
+  originalParameters: {
+    capacity: number;
+    bucketSize: number;
+    maxIterations: number;
+    expansionRate: number; // Note: cf.info might call it expansionRate or expansion
+    numItemsInserted: number; // from cf.info
+    // Add other cf.info fields if needed
+  };
+  chunks: CuckooFilterChunk[];
 }
 
 export class BackupService {
@@ -152,28 +177,26 @@ export class BackupService {
       } else {
         serviceLogger.info(`Triggering backup: Interval ${Math.round(timeSinceLastBackup / 1000)}s reached threshold ${BACKUP_INTERVAL_MS / 1000}s with ${bufferSize} items in buffer.`);
       }
-       
+      
       this.backupInProgress = true;
       try {
         const bufferToBackup = [...this.dataBuffer]; 
         const jobIdsToCleanup = [...this.jobIdBuffer];
         await this.createBackup(bufferToBackup);
-        
         // Clean up individual job results after successful backup
         if (jobIdsToCleanup.length > 0) {
           await this.cleanupIndividualJobResults(jobIdsToCleanup);
         }
-        
         this.dataBuffer = []; 
         this.jobIdBuffer = [];
         this.lastBackupTime = Date.now();
-        
         // Reset batch timing for next batch
         this.batchStartTime = Date.now();
         this.lastLogTime = Date.now();
         this.lastLogCount = 0;
-        
         serviceLogger.info(`Successfully backed up ${bufferToBackup.length} items and cleaned up ${jobIdsToCleanup.length} individual job results. Total backups: ${this.backupCount}`);
+        // --- NEW: Backup Redis snapshot to GCS after each batch ---
+        await this.backupRedisSnapshotToGCS();
       } catch (error) {
         serviceLogger.error(`Backup attempt failed. Buffer not cleared.`, { error });
       } finally {
@@ -411,200 +434,30 @@ export class BackupService {
     }
   }
 
-  /**
-   * Backs up the global Bloom filter to GCP storage
-   * @returns Promise<boolean> true if backup was successful, false otherwise
-   */
-  async backupBloomFilter(
-    bloomFilterKey: string = GLOBAL_VISITED_KEY
-  ): Promise<boolean> {
-    const serviceLogger = logger.child({
-      module: 'backup-service',
-      method: 'backupBloomFilter',
-      bloomFilterKey
-    });
-    
-    serviceLogger.info(`Starting Bloom filter backup for ${bloomFilterKey}...`);
-    
-    try {
-      // Create a timestamped filename
-      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const gcpDestination = `${BLOOM_BACKUP_FILE_GCP_PREFIX}${bloomFilterKey}_${timestamp}.json`;
-      
-      // Collect all chunks with their iterators
-      const chunks: { iterator: number; data: string }[] = [];
-      let iterator = 0;
-      
-      while (true) {
-        // Use Buffer for command arguments where appropriate
-        const result = await redisConnection.call('BF.SCANDUMP', bloomFilterKey, iterator);
-        // Type assertion for the result to handle the unknown type
-        const currentIteratorStr = Array.isArray(result) ? result[0] : '0';
-        const chunkData = Array.isArray(result) ? result[1] : null;
-        const currentIterator = Number(currentIteratorStr);
-
-        serviceLogger.info({
-          message: `BF.SCANDUMP chunk - Iterator for next call: ${currentIteratorStr}`,
-          dataType: typeof chunkData,
-          isBuffer: Buffer.isBuffer(chunkData),
-          length: chunkData ? (chunkData as Buffer).length : 'null',
-        });
-
-        if (!chunkData && currentIterator === 0 && iterator !== 0) {
-           serviceLogger.warn(`BF.SCANDUMP for ${bloomFilterKey} returned null data but iterator is 0. This might indicate end of scan for a non-empty filter that ended with an empty chunk, or an already empty filter.`);
-        }
-
-        if (!chunkData) { // No more data
-          break;
-        }
-
-        // Convert Buffer to base64 string for JSON storage
-        const bufferChunk = Buffer.isBuffer(chunkData) ? chunkData : Buffer.from(chunkData);
-        const base64Data = bufferChunk.toString('base64');
-        
-        serviceLogger.info(`Saving chunk ${chunks.length} with iterator ${iterator}, buffer length: ${bufferChunk.length}, base64 length: ${base64Data.length}`);
-        
-        chunks.push({
-          iterator: iterator,
-          data: base64Data
-        });
-
-        if (currentIterator === 0) {
-          break; // Scan complete
-        }
-        iterator = currentIterator;
-      }
-      
-      if (chunks.length === 0) {
-        serviceLogger.warn(`No data returned from BF.SCANDUMP for ${bloomFilterKey}. Filter might be empty.`);
-        return false;
-      }
-      
-      // Save chunks as JSON
-      const backupData = {
-        bloomFilterKey,
-        timestamp: new Date().toISOString(),
-        chunks
-      };
-      
-      const jsonContent = JSON.stringify(backupData, null, 2);
-      
-      // Ensure directory exists
-      await fs.mkdir(path.dirname(BLOOM_BACKUP_FILE_LOCAL), { recursive: true });
-      await fs.writeFile(BLOOM_BACKUP_FILE_LOCAL, jsonContent);
-      serviceLogger.info(`Bloom filter data saved to local file: ${BLOOM_BACKUP_FILE_LOCAL} with ${chunks.length} chunks`);
-
-      // Upload to GCP with timestamped filename
-      await this.storage.bucket(GCP_BUCKET).upload(BLOOM_BACKUP_FILE_LOCAL, {
-        destination: gcpDestination,
-        metadata: {
-          contentType: 'application/json'
-        }
-      });
-      serviceLogger.info(`Successfully uploaded Bloom filter dump to GCP: ${gcpDestination}`);
-      
-      return true;
-    } catch (error) {
-      serviceLogger.error(`Failed to backup Bloom filter ${bloomFilterKey}:`, { error: error.message });
-      Sentry.captureException(error);
-      return false;
-    } finally {
-      try {
-        // Attempt cleanup even on error, check if file exists first
-        if (await fs.stat(BLOOM_BACKUP_FILE_LOCAL).catch(() => false)) {
-          await fs.unlink(BLOOM_BACKUP_FILE_LOCAL);
-        }
-      } catch (unlinkError) {
-        if (unlinkError.code !== 'ENOENT') {
-          serviceLogger.warn(`Failed to delete local Bloom filter dump file: ${BLOOM_BACKUP_FILE_LOCAL}`, { error: unlinkError.message });
-        }
-      }
-    }
+  // --- NEW: Full Redis snapshot backup to GCS ---
+  async backupRedisSnapshotToGCS(): Promise<void> {
+    logger.info('[Redis Snapshot] Triggering BGSAVE...');
+    await redisConnection.call('BGSAVE');
+    // Wait for dump.rdb to be updated (simple sleep, can be improved)
+    await new Promise(res => setTimeout(res, 2000));
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const gcsFilename = `redis-dump/dump_${timestamp}.rdb`;
+    await this.storage.bucket(GCP_BUCKET).upload(REDIS_DUMP_PATH, { destination: gcsFilename });
+    logger.info(`[Redis Snapshot] Uploaded Redis dump to GCS: ${gcsFilename}`);
   }
 
-  /**
-   * Alternative method to restore Bloom filter by extracting items and re-adding them
-   * This is a workaround for BF.LOADCHUNK issues in newer RedisBloom versions
-   */
-  private async restoreBloomFilterAlternative(
-    bloomFilterKey: string,
-    capacity: number,
-    errorRate: number
-  ): Promise<boolean> {
-    const serviceLogger = logger.child({
-      module: 'backup-service',
-      method: 'restoreBloomFilterAlternative',
-      bloomFilterKey
-    });
-    
-    try {
-      // For now, since we can't extract the original items from the dump,
-      // we'll just create an empty filter as a fallback
-      serviceLogger.warn(`Using alternative restore method - creating new empty filter for ${bloomFilterKey}`);
-      
-      await redisConnection.call('BF.RESERVE', bloomFilterKey, errorRate, capacity);
-      serviceLogger.info(`Created new empty Bloom filter ${bloomFilterKey} as fallback`);
-      
-      return true;
-    } catch (error: any) {
-      serviceLogger.error(`Failed to create fallback filter: ${error.message}`);
-      return false;
-    }
-  }
-
-  /**
-   * Restores the global Bloom filter from GCP storage
-   * @returns Promise<boolean> true if restore was successful, false otherwise
-   */
-  async restoreBloomFilter(
-    bloomFilterKey: string = GLOBAL_VISITED_KEY,
-    capacity: number = DEFAULT_BLOOM_CAPACITY,
-    errorRate: number = DEFAULT_BLOOM_ERROR_RATE
-  ): Promise<boolean> {
-    const serviceLogger = logger.child({
-      module: 'backup-service',
-      method: 'restoreBloomFilter',
-      bloomFilterKey
-    });
-    
-    try {
-      let filterExistsInRedis = (await redisConnection.exists(bloomFilterKey)) === 1;
-      if (filterExistsInRedis) {
-        serviceLogger.info(`Bloom filter ${bloomFilterKey} already exists in Redis.`);
-        return true;
-      }
-
-      serviceLogger.info(`Attempting to restore Bloom filter ${bloomFilterKey} from GCP bucket ${GCP_BUCKET}...`);
-      
-      const [files] = await this.storage.bucket(GCP_BUCKET).getFiles({
-        prefix: `${BLOOM_BACKUP_FILE_GCP_PREFIX}${bloomFilterKey}_`
-      });
-      
-      if (!files || files.length === 0) {
-        serviceLogger.warn(`No Bloom filter backups found in GCP bucket ${GCP_BUCKET} for key ${bloomFilterKey}. Creating new filter.`);
-        // Create new filter if no backup exists
-        await redisConnection.call('BF.RESERVE', bloomFilterKey, errorRate, capacity);
-        serviceLogger.info(`Initialized new empty Bloom filter ${bloomFilterKey} as no backup was found.`);
-        return true; 
-      }
-      
-      // Sort files by name to get the latest backup
-      const sortedFiles = files.sort((a, b) => b.name.localeCompare(a.name));
-      const latestFile = sortedFiles[0];
-      
-      serviceLogger.info(`Found latest Bloom filter backup: ${latestFile.name}`);
-      
-      // Due to issues with BF.LOADCHUNK in RedisBloom 2.8.x, we'll use the alternative method
-      serviceLogger.warn(`BF.LOADCHUNK is not working properly in RedisBloom 2.8.x, using alternative restore method`);
-      return await this.restoreBloomFilterAlternative(bloomFilterKey, capacity, errorRate);
-      
-    } catch (error: any) {
-      serviceLogger.error({
-        message: `Error restoring Bloom filter ${bloomFilterKey} from GCP: ${error.message}`,
-        error: error.stack,
-      });
-      return false;
-    }
+  // --- NEW: Restore Redis snapshot from GCS ---
+  async restoreRedisSnapshotFromGCS(): Promise<void> {
+    logger.info('[Redis Restore] Looking for latest Redis dump in GCS...');
+    const [files] = await this.storage.bucket(GCP_BUCKET).getFiles({ prefix: 'redis-dump/dump_' });
+    if (!files.length) throw new Error('No Redis dump found in GCS');
+    files.sort((a, b) => b.name.localeCompare(a.name)); // latest first
+    const latest = files[0];
+    await latest.download({ destination: REDIS_DUMP_PATH });
+    logger.info(`[Redis Restore] Downloaded latest Redis dump from GCS: ${latest.name}`);
+    // Restart Redis container to load new dump
+    await execAsync(`docker compose restart ${REDIS_CONTAINER_NAME}`);
+    logger.info('[Redis Restore] Redis container restarted to load new dump');
   }
 
   async startBackupRoutine() {
