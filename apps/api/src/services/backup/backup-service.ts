@@ -5,14 +5,18 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getDoneJobsOrderedLength } from '../../lib/crawl-redis';
 import * as Sentry from "@sentry/node";
+import pLimit from 'p-limit';
 
-const BATCH_SIZE = 500;
+const BATCH_SIZE = 5000;
 const BACKUP_DIR = '/app/data/crawl_backups';
 const GCP_BUCKET = process.env.GCP_BUCKET || 'firecrawl-backups';
 const BLOOM_BACKUP_FILE_LOCAL = '/app/data/crawl_backups/global_visited_bloom_latest.dump';
 const BLOOM_BACKUP_FILE_GCP_PREFIX = 'global_visited_bloom_';
 const GLOBAL_VISITED_KEY = 'global:visited_bloom';
 const BACKUP_INTERVAL_MS = 2 * 60 * 1000;
+const MAX_CONCURRENT_UPLOADS = 2;
+const MAX_UPLOAD_RETRIES = 5;
+const UPLOAD_RETRY_BASE_DELAY = 2000; // ms
 
 interface BackupMetadata {
   crawl_id: string;
@@ -34,6 +38,8 @@ interface BackupFile {
   scraped_data: ScrapedData[];
 }
 
+const uploadLimit = pLimit(MAX_CONCURRENT_UPLOADS);
+
 export class BackupService {
   private storage: Storage;
   public currentCrawlId: string | null = null;
@@ -45,6 +51,10 @@ export class BackupService {
 
   constructor() {
     this.storage = new Storage();
+    // On startup, re-upload any pending local backup files
+    this.reuploadPendingBackups().catch(err => {
+      logger.error('Error during reuploadPendingBackups on startup', { error: err });
+    });
   }
 
   public async initializeBackup(crawlId: string, domain: string) {
@@ -152,17 +162,17 @@ export class BackupService {
       serviceLogger.info(`Saved batch ${currentBatchNumber} to local file: ${filepath}`);
 
       const gcpDestination = `${this.currentDomain}/${this.currentCrawlId}/${filename}`;
-      await this.uploadToGCP(filepath, gcpDestination);
-      serviceLogger.info(`Successfully uploaded batch ${currentBatchNumber} to GCP: ${gcpDestination}`);
-
-      this.backupCount++; 
-
-      try {
-        await fs.unlink(filepath);
-        serviceLogger.info(`Deleted local backup file: ${filepath}`);
-      } catch (unlinkError) {
-        serviceLogger.warn(`Failed to delete local backup file: ${filepath}`, { error: unlinkError });
-      }
+      await uploadLimit(async () => {
+        await this.uploadWithRetry(filepath, gcpDestination);
+        serviceLogger.info(`Successfully uploaded batch ${currentBatchNumber} to GCP: ${gcpDestination}`);
+        this.backupCount++;
+        try {
+          await fs.unlink(filepath);
+          serviceLogger.info(`Deleted local backup file: ${filepath}`);
+        } catch (unlinkError) {
+          serviceLogger.warn(`Failed to delete local backup file: ${filepath}`, { error: unlinkError });
+        }
+      });
 
     } catch (error) {
       serviceLogger.error(`Failed to create or upload backup for batch ${currentBatchNumber}`, { error });
@@ -178,35 +188,62 @@ export class BackupService {
     }
   }
 
-  private async uploadToGCP(filepath: string, destination: string) {
-    const serviceLogger = logger.child({ 
-        module: 'backup-service', 
-        method: 'uploadToGCP', 
-        crawlId: this.currentCrawlId,
-        filepath, 
-        destination 
-    });
-    try {
-      serviceLogger.info(`Attempting to upload backup to GCP.`);
-      await this.storage.bucket(GCP_BUCKET).upload(filepath, {
-        destination: destination,
-        metadata: {
-          contentType: 'application/json'
+  private async uploadWithRetry(filepath: string, destination: string, retries = MAX_UPLOAD_RETRIES): Promise<void> {
+    const serviceLogger = logger.child({ module: 'backup-service', method: 'uploadWithRetry', filepath, destination });
+    for (let attempt = 1; attempt <= retries; attempt++) {
+      try {
+        serviceLogger.info(`Attempt ${attempt}: Uploading backup to GCP...`);
+        await this.storage.bucket(GCP_BUCKET).upload(filepath, {
+          destination: destination,
+          metadata: { contentType: 'application/json' }
+        });
+        serviceLogger.info(`Successfully uploaded backup to GCP on attempt ${attempt}.`);
+        return;
+      } catch (error) {
+        serviceLogger.warn(`Upload attempt ${attempt} failed`, { error });
+        if (attempt === retries) {
+          serviceLogger.error(`All ${retries} upload attempts failed for ${filepath}`);
+          throw error;
         }
-      });
-      serviceLogger.info(`Successfully uploaded backup to GCP.`);
-    } catch (error) {
-      serviceLogger.error(`Failed to upload backup to GCP`, { error });
-      Sentry.captureException(error, {
-         extra: { 
-           crawlId: this.currentCrawlId, 
-           domain: this.currentDomain, 
-           filepath, 
-           destination,
-           bucket: GCP_BUCKET
-         } 
-      });
-      throw error;
+        const delay = UPLOAD_RETRY_BASE_DELAY * Math.pow(2, attempt - 1);
+        serviceLogger.info(`Waiting ${delay}ms before retrying upload...`);
+        await new Promise(res => setTimeout(res, delay));
+      }
+    }
+  }
+
+  public async reuploadPendingBackups() {
+    const serviceLogger = logger.child({ module: 'backup-service', method: 'reuploadPendingBackups' });
+    serviceLogger.info('Scanning for local backup files to re-upload...');
+    try {
+      const domains = await fs.readdir(BACKUP_DIR);
+      for (const domain of domains) {
+        const domainDir = path.join(BACKUP_DIR, domain);
+        let files: string[] = [];
+        try {
+          files = (await fs.readdir(domainDir)).filter(f => f.endsWith('.json'));
+        } catch (err) {
+          serviceLogger.warn(`Failed to read dir ${domainDir}`, { error: err });
+          continue;
+        }
+        for (const file of files) {
+          const filepath = path.join(domainDir, file);
+          const destination = `${domain}/${file}`;
+          await uploadLimit(async () => {
+            try {
+              serviceLogger.info(`Re-uploading pending backup: ${filepath} -> ${destination}`);
+              await this.uploadWithRetry(filepath, destination);
+              await fs.unlink(filepath);
+              serviceLogger.info(`Deleted local backup file after re-upload: ${filepath}`);
+            } catch (err) {
+              serviceLogger.error(`Failed to re-upload pending backup: ${filepath}`, { error: err });
+            }
+          });
+        }
+      }
+      serviceLogger.info('Finished scanning and re-uploading local backup files.');
+    } catch (err) {
+      serviceLogger.error('Error during reuploadPendingBackups', { error: err });
     }
   }
 
