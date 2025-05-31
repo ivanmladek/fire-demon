@@ -2,6 +2,7 @@ import type { Socket } from "net";
 import type { TLSSocket } from "tls";
 import * as undici from "undici";
 import { Address6 } from "ip-address";
+import { logger as _logger } from "../../../../lib/logger";
 
 export class InsecureConnectionError extends Error {
   constructor() {
@@ -43,6 +44,13 @@ export function makeSecureDispatcher(
   url: string,
   options?: undici.Agent.Options,
 ) {
+  const logger = _logger.child({ module: "makeSecureDispatcher" });
+  logger.info(`Attempting to create dispatcher for URL: ${url}`);
+  logger.info(`PROXY_SERVER env: ${process.env.PROXY_SERVER}`);
+  logger.info(`PROXY_USERNAME env: ${process.env.PROXY_USERNAME}`);
+  // PROXY_PASSWORD is sensitive, so avoid logging its value directly
+  logger.info(`PROXY_PASSWORD env is set: ${!!process.env.PROXY_PASSWORD}`);
+
   const agentOpts: undici.Agent.Options = {
     connect: {
       rejectUnauthorized: false, // bypass SSL failures -- this is fine
@@ -53,14 +61,14 @@ export function makeSecureDispatcher(
   };
 
   const agent = process.env.PROXY_SERVER
-    ? new undici.ProxyAgent({
+    ? (logger.info("Creating ProxyAgent due to PROXY_SERVER env var."), new undici.ProxyAgent({
       uri: process.env.PROXY_SERVER.includes("://") ? process.env.PROXY_SERVER : ("http://" + process.env.PROXY_SERVER),
       token: process.env.PROXY_USERNAME
         ? `Basic ${Buffer.from(process.env.PROXY_USERNAME + ":" + (process.env.PROXY_PASSWORD ?? "")).toString("base64")}`
         : undefined,
       ...agentOpts,
-    })
-    : new undici.Agent(agentOpts);
+    }))
+    : (logger.info("Creating standard undici.Agent as PROXY_SERVER env var is not set."), new undici.Agent(agentOpts));
 
   agent.on("connect", (_, targets) => {
     const client: undici.Client = targets.slice(-1)[0] as undici.Client;

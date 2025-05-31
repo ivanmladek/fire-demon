@@ -46,8 +46,8 @@ x-common-env: &common-env
   SERPER_API_KEY: ${SERPER_API_KEY}
   SEARCHAPI_API_KEY: ${SEARCHAPI_API_KEY}
   LOGGING_LEVEL: ${LOGGING_LEVEL}
-  PROXY_SERVER: gate.nodemaven.com:8080
-  PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-us-type-mobile-filter-medium
+  PROXY_SERVER: gw.proxy.cc:4512
+  PROXY_USERNAME: ewcPWmmhgpDaUNW3
   PROXY_PASSWORD: ktonj4oufu
   SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
@@ -62,8 +62,8 @@ services:
     restart: always
     environment:
       PORT: 3000
-      PROXY_SERVER: gate.nodemaven.com:8080
-      PROXY_USERNAME: nodemaven_nospam_simplelogin_com-country-us-type-mobile-filter-medium
+      PROXY_SERVER: gw.proxy.cc:4512
+      PROXY_USERNAME: ewcPWmmhgpDaUNW3
       PROXY_PASSWORD: ktonj4oufu
       BLOCK_MEDIA: true
       # Browser optimization settings
