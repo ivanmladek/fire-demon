@@ -119,6 +119,7 @@
     "mongoose": "^8.4.4",
     "natural": "^7.0.7",
     "ollama-ai-provider": "^1.2.0",
+    "p-limit": "^6.2.0",
     "parse-diff": "^0.11.1",
     "pdf-parse": "^1.1.1",
     "pos": "^0.4.2",

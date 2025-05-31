@@ -1,0 +1,11 @@
+{
+  "name": "minimal-gcp-uploader",
+  "version": "1.0.0",
+  "main": "uploader.js",
+  "scripts": {
+    "start": "node uploader.js"
+  },
+  "dependencies": {
+    "@google-cloud/storage": "^7.0.0"
+  }
+} 

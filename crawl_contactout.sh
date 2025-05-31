@@ -1,13 +1,13 @@
 #!/bin/bash
 
 # Crawl ContactOut profile pages
-curl -X POST http://localhost:54174/v1/crawl \
+curl -X POST http://localhost:55704/v1/crawl \
 -H "Authorization: Bearer test-api-key-123" \
 -H "Content-Type: application/json" \
 -d '{
   "url": "https://contactout.com/Jay-Madara-3194164",
   "allowBackwardLinks": true,
-  "limit": 1000000,
+  "limit": 100000000,
   "maxDepth": 130,
   "allowExternalLinks": false,
   "ignoreSitemap": true,

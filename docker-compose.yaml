@@ -68,7 +68,7 @@ services:
       BLOCK_MEDIA: true
       # Browser optimization settings
       BROWSER_CONTEXT_OPTIONS: '{"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36","viewport":{"width":1920,"height":1080},"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"javaScriptEnabled":true}'
-      MAX_CONCURRENT_PAGES: 2
+      MAX_CONCURRENT_PAGES: 20
       PAGE_TIMEOUT: 30000
       RETRY_COUNT: 1
       RETRY_DELAY: 10000
@@ -127,7 +127,7 @@ services:
       FLY_PROCESS_GROUP: worker
       MAX_RAM: 0.92
       # Queue configuration
-      BULL_CONCURRENCY: 2
+      BULL_CONCURRENCY: 20
       BULL_LIMITER_MAX: 3000
       BULL_LIMITER_DURATION: 60000
       BULL_LOCK_DURATION: 600000
@@ -181,6 +181,30 @@ services:
           memory: 24G
         reservations:
           memory: 16G
+
+  minimal-gcp-uploader:
+    build:
+      context: ./apps/minimal-gcp-uploader # New app directory
+      dockerfile: Dockerfile
+    restart: always
+    environment:
+      GCP_BUCKET: ${GCP_BUCKET:-firecrawl-backups}
+      GOOGLE_APPLICATION_CREDENTIALS: /var/secrets/google/credentials.json
+      POLLING_INTERVAL_SECONDS: "60" # Scan every 60 seconds
+      MAX_UPLOAD_RETRIES: "3"        # Retry up to 3 times
+      RETRY_DELAY_SECONDS: "10"      # Wait 10 seconds between retries
+    volumes:
+      - /Users/jj/code/gdrive-410709-7f394f22402f.json:/var/secrets/google/credentials.json:ro
+      - ./data/crawl_backups:/app/data/crawl_backups # Shared volume
+    # networks: # Optional, only if needed for logging or other services
+    #   - backend
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.25'
+        reservations:
+          memory: 128M
 
 networks:
   backend:
