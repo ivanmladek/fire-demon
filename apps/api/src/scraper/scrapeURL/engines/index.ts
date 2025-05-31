@@ -314,6 +314,34 @@ export function buildFallbackList(meta: Meta): {
   engine: Engine;
   unsupportedFeatures: Set<FeatureFlag>;
 }[] {
+  // --- NEW: Check for forced engine ---
+  if (meta.options.engine) {
+    const forcedEngine = meta.options.engine as Engine; // Cast to Engine type
+    if (engines.includes(forcedEngine)) { // Ensure the forced engine is in the globally available 'engines' list
+      meta.logger.info(`Forcing engine via scrapeOptions: ${forcedEngine}`);
+      const unsupportedFeatures = new Set<FeatureFlag>();
+      // Check if the forced engine supports all requested features
+      for (const flag of meta.featureFlags) {
+        if (!engineOptions[forcedEngine].features[flag]) {
+          unsupportedFeatures.add(flag);
+        }
+      }
+      if (unsupportedFeatures.size > 0) {
+        meta.logger.warn(`Forced engine ${forcedEngine} does not support all requested features: ${Array.from(unsupportedFeatures).join(', ')}`);
+      }
+      return [{ engine: forcedEngine, unsupportedFeatures }];
+    } else {
+      meta.logger.warn(`Forced engine '${meta.options.engine}' via scrapeOptions is not a valid or enabled engine. Falling back to default engine selection.`);
+    }
+  }
+  // --- END NEW ---
+
+  let availableEngines: {
+    engine: Engine;
+    supportScore: number;
+    unsupportedFeatures: Set<FeatureFlag>;
+  }[] = [];
+
   const _engines: Engine[] = [
     ...engines,
     
@@ -334,11 +362,6 @@ export function buildFallbackList(meta: Meta): {
     0,
   );
   const priorityThreshold = Math.floor(prioritySum / 2);
-  let selectedEngines: {
-    engine: Engine;
-    supportScore: number;
-    unsupportedFeatures: Set<FeatureFlag>;
-  }[] = [];
 
   const currentEngines =
     meta.internalOptions.forceEngine !== undefined
@@ -366,7 +389,7 @@ export function buildFallbackList(meta: Meta): {
     }
 
     if (supportScore >= priorityThreshold) {
-      selectedEngines.push({ engine, supportScore, unsupportedFeatures });
+      availableEngines.push({ engine, supportScore, unsupportedFeatures });
       meta.logger.debug(`Engine ${engine} meets feature priority threshold`, {
         supportScore,
         prioritySum,
@@ -388,21 +411,21 @@ export function buildFallbackList(meta: Meta): {
     }
   }
 
-  if (selectedEngines.some((x) => engineOptions[x.engine].quality > 0)) {
-    selectedEngines = selectedEngines.filter(
+  if (availableEngines.some((x) => engineOptions[x.engine].quality > 0)) {
+    availableEngines = availableEngines.filter(
       (x) => engineOptions[x.engine].quality > 0,
     );
   }
 
   if (meta.internalOptions.forceEngine === undefined) { // retain force engine order
-    selectedEngines.sort(
+    availableEngines.sort(
       (a, b) =>
         b.supportScore - a.supportScore ||
         engineOptions[b.engine].quality - engineOptions[a.engine].quality,
     );
   }
 
-  return selectedEngines;
+  return availableEngines;
 }
 
 export async function scrapeURLWithEngine(

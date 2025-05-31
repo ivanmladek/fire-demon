@@ -257,6 +257,7 @@ const baseScrapeOptions = z
     mobile: z.boolean().default(false),
     parsePDF: z.boolean().default(true),
     actions: actionsSchema.optional(),
+    engine: z.enum(["fetch", "playwright"]).optional(),
     // New
     location: z
       .object({

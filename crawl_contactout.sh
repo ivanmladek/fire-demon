@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Crawl ContactOut profile pages
-curl -X POST http://localhost:57373/v1/crawl \
+curl -X POST http://localhost:62732/v1/crawl \
 -H "Authorization: Bearer test-api-key-123" \
 -H "Content-Type: application/json" \
 -d '{
@@ -51,7 +51,7 @@ curl -X POST http://localhost:57373/v1/crawl \
     "removeBase64Images": true,
     "blockAds": true,
     "proxy": "basic",
-
+    "engine": "fetch",
     "formats": ["markdown"],
     "onlyMainContent": true,
     "excludeTags": [
