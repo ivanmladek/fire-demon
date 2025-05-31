@@ -45,11 +45,11 @@ export function makeSecureDispatcher(
   options?: undici.Agent.Options,
 ) {
   const logger = _logger.child({ module: "makeSecureDispatcher" });
-  logger.info(`Attempting to create dispatcher for URL: ${url}`);
-  logger.info(`PROXY_SERVER env: ${process.env.PROXY_SERVER}`);
-  logger.info(`PROXY_USERNAME env: ${process.env.PROXY_USERNAME}`);
+ // logger.info(`Attempting to create dispatcher for URL: ${url}`);
+ // logger.info(`PROXY_SERVER env: ${process.env.PROXY_SERVER}`);
+ // logger.info(`PROXY_USERNAME env: ${process.env.PROXY_USERNAME}`);
   // PROXY_PASSWORD is sensitive, so avoid logging its value directly
-  logger.info(`PROXY_PASSWORD env is set: ${!!process.env.PROXY_PASSWORD}`);
+ // logger.info(`PROXY_PASSWORD env is set: ${!!process.env.PROXY_PASSWORD}`);
 
   const agentOpts: undici.Agent.Options = {
     connect: {

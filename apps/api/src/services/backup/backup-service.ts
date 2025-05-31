@@ -6,13 +6,13 @@ import * as path from 'path';
 import { getDoneJobsOrderedLength } from '../../lib/crawl-redis';
 import * as Sentry from "@sentry/node";
 
-const BATCH_SIZE = 2000;
+const BATCH_SIZE = 500;
 const BACKUP_DIR = '/app/data/crawl_backups';
 const GCP_BUCKET = process.env.GCP_BUCKET || 'firecrawl-backups';
 const BLOOM_BACKUP_FILE_LOCAL = '/app/data/crawl_backups/global_visited_bloom_latest.dump';
 const BLOOM_BACKUP_FILE_GCP_PREFIX = 'global_visited_bloom_';
 const GLOBAL_VISITED_KEY = 'global:visited_bloom';
-const BACKUP_INTERVAL_MS = 15 * 60 * 1000;
+const BACKUP_INTERVAL_MS = 2 * 60 * 1000;
 
 interface BackupMetadata {
   crawl_id: string;
@@ -125,8 +125,7 @@ export class BackupService {
       batchSize: bufferToBackup.length
     });
 
-    serviceLogger.info(`Starting backup for batch ${currentBatchNumber}. Total jobs completed: 
-${bufferToBackup.length}`);
+    serviceLogger.info(`Starting backup for batch ${currentBatchNumber}. Total jobs completed: ${bufferToBackup.length}`);
 
     if (bufferToBackup.length === 0) {
       serviceLogger.warn(`Buffer is empty. Skipping backup for batch ${currentBatchNumber}.`);

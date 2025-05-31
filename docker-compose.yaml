@@ -47,8 +47,8 @@ x-common-env: &common-env
   SEARCHAPI_API_KEY: ${SEARCHAPI_API_KEY}
   LOGGING_LEVEL: ${LOGGING_LEVEL}
   PROXY_SERVER: gw.proxy.cc:4512
-  PROXY_USERNAME: ewcPWmmhgpDaUNW3
-  PROXY_PASSWORD: ktonj4oufu
+  PROXY_USERNAME: pcc-Retying5712
+  PROXY_PASSWORD: ewcPWmmhgpDaUNW3
   SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
@@ -63,12 +63,12 @@ services:
     environment:
       PORT: 3000
       PROXY_SERVER: gw.proxy.cc:4512
-      PROXY_USERNAME: ewcPWmmhgpDaUNW3
-      PROXY_PASSWORD: ktonj4oufu
+      PROXY_USERNAME: pcc-Retying5712
+      PROXY_PASSWORD: ewcPWmmhgpDaUNW3
       BLOCK_MEDIA: true
       # Browser optimization settings
       BROWSER_CONTEXT_OPTIONS: '{"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36","viewport":{"width":1920,"height":1080},"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"javaScriptEnabled":true}'
-      MAX_CONCURRENT_PAGES: 1
+      MAX_CONCURRENT_PAGES: 2
       PAGE_TIMEOUT: 30000
       RETRY_COUNT: 1
       RETRY_DELAY: 10000
@@ -92,8 +92,8 @@ services:
           memory: 15G
           cpus: '8'
         reservations:
-          memory: 10G
-          cpus: '5'
+          memory: 3G
+          cpus: '3'
 
   api:
     <<: *common-service
@@ -115,7 +115,7 @@ services:
           cpus: '8'
         reservations:
           memory: 16G
-          cpus: '4'
+          cpus: '10'
 
   worker:
     <<: *common-service
@@ -127,7 +127,7 @@ services:
       FLY_PROCESS_GROUP: worker
       MAX_RAM: 0.92
       # Queue configuration
-      BULL_CONCURRENCY: 3
+      BULL_CONCURRENCY: 2
       BULL_LIMITER_MAX: 3000
       BULL_LIMITER_DURATION: 60000
       BULL_LOCK_DURATION: 600000
@@ -160,8 +160,8 @@ services:
           memory: 10G
           cpus: '4'
         reservations:
-          memory: 5G
-          cpus: '2'
+          memory: 4G
+          cpus: '4'
 
   redis:
     # NOTE: If you want to use Valkey (open source) instead of Redis (source available),

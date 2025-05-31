@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Crawl ContactOut profile pages
-curl -X POST http://localhost:59578/v1/crawl \
+curl -X POST http://localhost:54174/v1/crawl \
 -H "Authorization: Bearer test-api-key-123" \
 -H "Content-Type: application/json" \
 -d '{
