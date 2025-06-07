@@ -23,7 +23,13 @@ x-common-service: &common-service
       reservations:
         memory: 8G
 
+x-proxy-env: &proxy-env
+  PROXY_SERVER: ${PROXY_SERVER:-gw.vip.proxy.cc:4512}
+  PROXY_USERNAME: ${PROXY_USERNAME:-pcc-b4tc7iwqy4k8}
+  PROXY_PASSWORD: ${PROXY_PASSWORD:-JUMTjyVecanCK28E}
+
 x-common-env: &common-env
+  <<: *proxy-env
   REDIS_URL: ${REDIS_URL:-redis://redis:6379}
   REDIS_RATE_LIMIT_URL: ${REDIS_URL:-redis://redis:6379}
   PLAYWRIGHT_MICROSERVICE_URL: ${PLAYWRIGHT_MICROSERVICE_URL:-http://playwright-service:3000/scrape}
@@ -46,9 +52,6 @@ x-common-env: &common-env
   SERPER_API_KEY: ${SERPER_API_KEY}
   SEARCHAPI_API_KEY: ${SEARCHAPI_API_KEY}
   LOGGING_LEVEL: ${LOGGING_LEVEL}
-  PROXY_SERVER: gw.proxy.cc:4512
-  PROXY_USERNAME: pcc-Retying5712
-  PROXY_PASSWORD: ewcPWmmhgpDaUNW3
   SEARXNG_ENDPOINT: ${SEARXNG_ENDPOINT}
   SEARXNG_ENGINES: ${SEARXNG_ENGINES}
   SEARXNG_CATEGORIES: ${SEARXNG_CATEGORIES}
@@ -61,14 +64,12 @@ services:
     build: apps/playwright-service-ts
     restart: always
     environment:
+      <<: *proxy-env
       PORT: 3000
-      PROXY_SERVER: gw.proxy.cc:4512
-      PROXY_USERNAME: pcc-Retying5712
-      PROXY_PASSWORD: ewcPWmmhgpDaUNW3
       BLOCK_MEDIA: true
       # Browser optimization settings
       BROWSER_CONTEXT_OPTIONS: '{"userAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36","viewport":{"width":1920,"height":1080},"deviceScaleFactor":1,"isMobile":false,"hasTouch":false,"javaScriptEnabled":true}'
-      MAX_CONCURRENT_PAGES: 20
+      MAX_CONCURRENT_PAGES: 1000
       PAGE_TIMEOUT: 30000
       RETRY_COUNT: 1
       RETRY_DELAY: 10000
@@ -127,7 +128,7 @@ services:
       FLY_PROCESS_GROUP: worker
       MAX_RAM: 0.92
       # Queue configuration
-      BULL_CONCURRENCY: 20
+      BULL_CONCURRENCY: 1000
       BULL_LIMITER_MAX: 3000
       BULL_LIMITER_DURATION: 60000
       BULL_LOCK_DURATION: 600000
@@ -169,6 +170,7 @@ services:
     # Using Valkey with Firecrawl is untested and not guaranteed to work. Use with caution.
     # image: redis:alpine
     image: redis/redis-stack:latest
+    restart: always
     # image: valkey/valkey:alpine
     networks:
       - backend
