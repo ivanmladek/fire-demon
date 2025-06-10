@@ -29,8 +29,8 @@ def scrape_site(url):
 def ask_llm_for_crawl_command(url, scrape_summary):
     prompt = f"""
 You are a web crawling expert. Given the following website and a summary of its main page, suggest the optimal Firecrawl /crawl endpoint command (as a curl command) for maximum coverage and efficiency.
-- If the site is media-heavy or has anti-bot tech, recommend stealth proxies and playwright engine.
-- If it's mostly text and simple, use basic proxy and fetch engine.
+- If the site is media-heavy or has anti-bot tech, recommend stealth proxies.
+- If it's mostly text and simple, use basic proxy.
 - Set reasonable limits and maxDepth.
 - Exclude obvious non-content paths.
 - Output ONLY the explanation and the curl command, nothing else.
@@ -197,6 +197,8 @@ curl -X POST https://api.firecrawl.dev/v1/crawl \
 }}'
 ```
 
+
+NOTE THERE IS NO ENGINE in the API. DO NOT USE ENGINE.
 ---
 
 Website: {url}
