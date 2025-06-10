@@ -27,8 +27,6 @@ def scrape_site(url):
 
 
 def ask_llm_for_crawl_command(url, scrape_summary):
-    import anthropic
-    client = anthropic.Anthropic(api_key=CLAUDE_KEY)
     prompt = f"""
 You are a web crawling expert. Given the following website and a summary of its main page, suggest the optimal Firecrawl /crawl endpoint command (as a curl command) for maximum coverage and efficiency.
 - If the site is media-heavy or has anti-bot tech, recommend stealth proxies and playwright engine.
@@ -210,14 +208,32 @@ Scrape summary:
 
 First, explain your reasoning for the recommended crawl command (in a short paragraph or bullet points). Then, on a new line, output the ready-to-run curl command. Clearly separate the explanation and the command with a heading or divider (e.g., '---').
 """
-    msg = client.messages.create(
-        model="claude-opus-4-20250514",
-        max_tokens=700,
-        temperature=0.2,
-        system="You are a helpful assistant.",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return msg.content[0].text.strip()
+    # Try Anthropic first
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.environ.get("CLAUDE_KEY"))
+        msg = client.messages.create(
+            model="claude-3-7-sonnet-20250219",
+            max_tokens=700,
+            temperature=0.2,
+            system="You are a helpful assistant.",
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return msg.content[0].text.strip()
+    except Exception as e:
+        print(f"[Warning] Anthropic failed ({e}), falling back to OpenAI GPT-4.")
+        import openai
+        openai.api_key = os.environ.get("OPENAI_API_KEY")
+        response = openai.ChatCompletion.create(
+            model="gpt-4.1-2025-04-14",
+            messages=[
+                {"role": "system", "content": "You are a helpful assistant."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=700,
+            temperature=0.2,
+        )
+        return response['choices'][0]['message']['content'].strip()
 
 
 def ask_llm_to_fix_payload(payload, error):
@@ -377,9 +393,7 @@ def main():
             is_broker = broker_result.json.get('is_data_broker', False)
         except Exception:
             pass
-        if is_broker:
-            print("\nThis website appears to be a data broker (contains millions of people profiles). Please contact Firecrawl for specialized support. Exiting.")
-            return
+
     except Exception as e:
         print(f"[Warning] Could not check data broker status: {e}")
 
@@ -391,6 +405,10 @@ def main():
     payload = extract_json_payload(llm_output)
     if not payload:
         print("Could not extract a JSON payload from the LLM output.")
+        return
+
+    if is_broker:
+        print("\nThis website appears to be a data broker (contains millions of people profiles). Please contact Firecrawl for specialized support. Exiting.")
         return
 
     max_retries = 3
