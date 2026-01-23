@@ -109,7 +109,7 @@
     "keyword-extractor": "^0.0.28",
     "koffi": "^2.9.0",
     "languagedetect": "^2.0.0",
-    "lodash": "^4.17.21",
+    "lodash": "^4.17.23",
     "logsnag": "^1.0.0",
     "luxon": "^3.4.3",
     "mammoth": "^1.7.2",
