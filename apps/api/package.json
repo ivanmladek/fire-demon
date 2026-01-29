@@ -131,7 +131,7 @@
     "robots-parser": "^3.0.1",
     "scrapingbee": "^1.7.4",
     "stripe": "^16.1.0",
-    "supabase": "^1.77.9",
+    "supabase": "^2.72.9",
     "systeminformation": "^5.22.11",
     "tldts": "^6.1.75",
     "turndown": "^7.1.3",
